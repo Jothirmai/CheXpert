@@ -1,0 +1,58 @@
+# Chest Xpert — .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# Conda
+conda-meta/
+conda-build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Mobile
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/ios/
+mobile/android/
+mobile/.sourcemap/
+mobile/*.tgz
+
+# Backend
+backend/__pycache__/
+backend/temp/
+backend/reports/
+backend/*.log
+backend/.env
+
+# Chest Xpert
+*.egg-info/
+dist/
+build/
+.reports/
+.pytest_cache/
+
+# Temp
+/temp/
+reports/

@@ -1,0 +1,4 @@
+# Backend Python dependencies (add to existing hct-lsr env if needed)
+fastapi>=0.100.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
