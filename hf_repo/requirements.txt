@@ -1,0 +1,12 @@
+torch>=2.2.0
+torchvision>=0.17.0
+torchxrayvision>=1.5.4
+numpy
+pillow
+opencv-python
+scikit-learn
+scipy
+pandas
+streamlit
+reportlab
+pydicom
