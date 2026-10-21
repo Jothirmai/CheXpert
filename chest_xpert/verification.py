@@ -103,6 +103,7 @@ def _build_prompt(
     image_available: bool,
     mappings: list[LabelMapping],
     model_doc: str,
+    contact_sheet_available: bool = False,
 ) -> str:
     """Build a radiology-report prompt for the LLM.
 
@@ -167,6 +168,16 @@ def _build_prompt(
                      f"(supported={m.supported})")
     lines.append("")
     lines.append("Model documentation: " + model_doc)
+    lines.append("")
+    lines.append("IMAGES PROVIDED:")
+    if contact_sheet_available:
+        lines.append("- Grad-CAM contact sheet showing model attention heatmaps for "
+                     "all 18 findings (6x3 grid). Use these to cross-reference "
+                     "classifier scores with visual focus areas.")
+    elif image_available:
+        lines.append("- Original chest X-ray image.")
+    else:
+        lines.append("- No images available.")
     lines.append("")
     lines.append("TASKS:")
     lines.append("1. For each pathology, assess whether evidence is consistent "
@@ -548,14 +559,15 @@ class LLMModelClient:
             try:
                 load_kwargs["load_in_4bit"] = True
                 load_kwargs["torch_dtype"] = torch.float16
-                load_kwargs["device_map"] = "auto"
+                load_kwargs["device_map"] = {"": 0}
             except Exception:
                 # bitsandbytes broken — fall back to FP16 on GPU.
                 load_kwargs["torch_dtype"] = torch.float16
-                load_kwargs["device_map"] = "auto"
+                load_kwargs["device_map"] = {"": 0}
         else:
-            load_kwargs["torch_dtype"] = torch.float16
-            load_kwargs["device_map"] = "auto"
+            # Force CPU to avoid Qwen2-VL device mapping issues.
+            load_kwargs["torch_dtype"] = torch.float32
+            load_kwargs["device_map"] = None
 
         self._model = vlm_model_class.from_pretrained(
             model_id,
@@ -569,11 +581,16 @@ class LLMModelClient:
         mappings: list[LabelMapping],
         model_doc: str,
         image_path: Optional[str] = None,
+        contact_sheet_path: Optional[str] = None,
     ) -> VerificationResult:
         """Run prediction verification + report generation in ONE LLM call.
 
         Returns structured VerificationResult with both verification items
         and report_findings.
+
+        Qwen VLM receives BOTH the original X-ray image AND the Grad-CAM
+        contact sheet (all 18 findings), so it can visually correlate model
+        attention with classifier scores.
         """
         import time
 
@@ -594,9 +611,10 @@ class LLMModelClient:
             )
 
         prompt = _build_prompt(
-            image_available=image_path is not None,
+            image_available=image_path is not None or contact_sheet_path is not None,
             mappings=mappings,
             model_doc=model_doc,
+            contact_sheet_available=contact_sheet_path is not None,
         )
 
         try:
@@ -605,7 +623,9 @@ class LLMModelClient:
             elif self.backend == "vllm_server":
                 parsed, err = self._call_vllm_server(prompt)
             else:
-                parsed, err = self._call_local(prompt, image_path)
+                parsed, err = self._call_local(
+                    prompt, image_path, contact_sheet_path
+                )
 
             latency_ms = (time.perf_counter() - t0) * 1000.0
             if err or parsed is None:
@@ -717,7 +737,10 @@ class LLMModelClient:
             return None, f"vLLM server returned malformed JSON: {exc}"
 
     def _call_local(
-        self, prompt: str, image_path: Optional[str]
+        self,
+        prompt: str,
+        image_path: Optional[str],
+        contact_sheet_path: Optional[str] = None,
     ) -> tuple[Optional[dict], Optional[str]]:
         try:
             import torch
@@ -733,11 +756,13 @@ class LLMModelClient:
                 },
             ]
 
-            # Build user content: image first (if VL), then text
+            # Build user content: original X-ray preferred (known to work with Qwen VLM),
+            # fall back to contact sheet if no original.
             img = None
-            if self._is_vlm and image_path:
+            img_path = image_path or contact_sheet_path
+            if self._is_vlm and img_path:
                 try:
-                    img = Image.open(image_path).convert("RGB")
+                    img = Image.open(img_path).convert("RGB")
                     user_content = [
                         {"type": "image", "image": img},
                         {"type": "text", "text": prompt},
@@ -767,10 +792,9 @@ class LLMModelClient:
                     return_tensors="pt",
                 )
 
-            if hasattr(self._model, "device"):
-                inputs = {k: v.to(self._model.device)
-                          for k, v in inputs.items()}
-
+            # Move inputs to model device.
+            model_device = next(self._model.parameters()).device
+            inputs = inputs.to(model_device)
             with torch.no_grad():
                 out = self._model.generate(
                     **inputs, max_new_tokens=1024,
@@ -841,6 +865,9 @@ class VerificationEngine:
         mappings: list[LabelMapping],
         model_doc: str,
         image_path: Optional[str] = None,
+        contact_sheet_path: Optional[str] = None,
     ) -> VerificationResult:
         """Run prediction verification + report generation in one LLM call."""
-        return self.client.verify(mappings, model_doc, image_path)
+        return self.client.verify(
+            mappings, model_doc, image_path, contact_sheet_path
+        )

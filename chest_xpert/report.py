@@ -78,6 +78,7 @@ class ReportData:
     image_quality_note: Optional[str] = None
     heatmap_path: Optional[str] = None
     heatmap_label: Optional[str] = None
+    contact_sheet_path: Optional[str] = None
     impression: str = ""
     reviewer_name: Optional[str] = None
     review_status: str = "Pending"
@@ -171,6 +172,19 @@ def generate_html(data: ReportData) -> str:
             f"<p><b>Target finding:</b> {data.heatmap_label}. "
             "Highlighted regions are model explanations, not proof of disease.</p>"
             f'<img src="{data.heatmap_path}" class="gradcam" alt="Grad-CAM heatmap" />'
+            "</div>"
+        )
+
+    # ---------- Contact Sheet (all 18 Grad-CAMs) ----------
+    contact_sheet_html = ""
+    if data.contact_sheet_path:
+        contact_sheet_html = (
+            "<div class='section'>"
+            "<h2>Visual Explanation — Grad-CAM Contact Sheet (All 18 Findings)</h2>"
+            "<p>Each cell shows Grad-CAM attention for one finding. "
+            "Use these heatmaps to cross-reference classifier scores with "
+            "visual focus areas. Model explanations — not proof of disease.</p>"
+            f'<img src="{data.contact_sheet_path}" class="gradcam" alt="Grad-CAM contact sheet" />'
             "</div>"
         )
 
@@ -467,6 +481,8 @@ body {{
 
 {heatmap_html}
 
+{contact_sheet_html}
+
 {verification_html}
 
 {findings_html}
@@ -622,6 +638,16 @@ def generate_pdf(data: ReportData, output_path: str | Path) -> Path:
         story.append(P(f"Target finding: <b>{data.heatmap_label}</b>. "
                        "Highlighted regions are model explanations, not proof of disease.", "Italic"))
         img = RLImage(str(data.heatmap_path), width=75*mm, height=75*mm)
+        story.append(img)
+        story.append(Spacer(1, 8))
+
+    # Contact Sheet (all 18 Grad-CAMs)
+    if data.contact_sheet_path and Path(data.contact_sheet_path).exists():
+        story.append(P("Visual Explanation — Grad-CAM Contact Sheet (All 18 Findings)", "Heading2"))
+        story.append(P("Each cell shows Grad-CAM attention for one finding. "
+                       "Use these heatmaps to cross-reference classifier scores "
+                       "with visual focus areas. Model explanations — not proof of disease.", "Italic"))
+        img = RLImage(str(data.contact_sheet_path), width=150*mm, height=150*mm)
         story.append(img)
         story.append(Spacer(1, 8))
 

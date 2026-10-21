@@ -150,3 +150,80 @@ class GradCAM:
         overlay = (1.0 - alpha) * img_rgb + alpha * heatmap_color
         overlay = np.clip(overlay, 0, 1)
         return np.uint8(255 * overlay)
+
+
+def generate_contact_sheet(
+    results: list[GradCAMResult],
+    original_image: np.ndarray,
+    cols: int = 6,
+    rows: int = 3,
+    cell_size: int = 224,
+) -> np.ndarray:
+    """Create a contact sheet from multiple Grad-CAM results.
+
+    Arranges overlays in a grid with a label under each. Returns a uint8 RGB
+    array suitable for saving as a PNG.
+
+    Args:
+        results: List of GradCAMResult objects.
+        original_image: The original [0,1] grayscale image [H, W].
+        cols: Number of columns in the grid.
+        rows: Number of rows in the grid.
+        cell_size: Size (px) of each cell (square).
+    """
+    import textwrap
+
+    from PIL import ImageDraw, ImageFont
+
+    n_cells = cols * rows
+    sheet_h = rows * cell_size + 40  # extra for title row
+    sheet_w = cols * cell_size + 40
+
+    sheet = np.full((sheet_h, sheet_w, 3), 240, dtype=np.uint8)
+
+    # Title bar
+    sheet[0:24, :] = 40
+    draw = ImageDraw.Draw(Image.fromarray(sheet))
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
+        small = ImageFont.truetype("DejaVuSans.ttf", 10)
+    except Exception:
+        font = ImageFont.load_default()
+        small = ImageFont.load_default()
+
+    draw.text((20, 6), "Grad-CAM Contact Sheet — All 18 Findings", fill=(255, 255, 255), font=font)
+    draw.text((20, 20), "Model explanations — not proof of disease", fill=(220, 220, 220), font=small)
+
+    # Place each overlay in a cell.
+    for idx, result in enumerate(results[:n_cells]):
+        r = idx // cols
+        c = idx % cols
+        x0 = 20 + c * cell_size
+        y0 = 40 + r * cell_size
+
+        # Resize overlay to cell size.
+        ov = result.overlay
+        ov_img = Image.fromarray(ov).resize((cell_size, cell_size), Image.BILINEAR)
+        sheet[y0 : y0 + cell_size, x0 : x0 + cell_size] = np.array(ov_img)
+
+        # Label under each cell.
+        label = result.target_label
+        draw.text(
+            (x0 + 4, y0 + cell_size + 2),
+            label,
+            fill=(0, 0, 0),
+            font=small,
+        )
+
+    return np.array(sheet)
+
+
+def save_contact_sheet(
+    sheet: np.ndarray,
+    output_path: str,
+) -> str:
+    """Save contact sheet array to a PNG file."""
+    from PIL import Image
+
+    Image.fromarray(sheet).save(output_path)
+    return output_path

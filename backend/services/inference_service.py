@@ -306,39 +306,51 @@ class InferenceService:
                 }
             )
 
-        # ---------- Optional Grad-CAM ----------
+        # ---------- Grad-CAM for ALL supported findings + contact sheet ----------
         grad_cam_path = None
         grad_cam_ms = None
+        cam_results: list = []
         supported = []
         if generate_grad_cam:
             supported = [m for m in mappings if m.supported]
             if supported:
                 t0 = time.perf_counter()
-                from chest_xpert.explainability import GradCAM
-
-                cam = GradCAM(engine.model, target_layer_name="features.norm5")
-                # Build a display image for the overlay.
-                disp = pp.tensor.detach().cpu().numpy()[0, 0]
                 import numpy as np
 
-                disp = np.clip((disp + 1024) / 2048, 0, 1)
-                target = supported[0]
-                grad = cam.generate(
-                    input_tensor=pp.tensor,
-                    target_label=target.requested_label,
-                    model_outputs=result.model_outputs,
-                    original_image=disp,
+                from chest_xpert.explainability import (
+                    GradCAM,
+                    generate_contact_sheet,
+                    save_contact_sheet,
                 )
+
+                cam = GradCAM(engine.model, target_layer_name="features.norm5")
+                disp = pp.tensor.detach().cpu().numpy()[0, 0]
+                disp = np.clip((disp + 1024) / 2048, 0, 1)
+
+                for m in supported:
+                    grad = cam.generate(
+                        input_tensor=pp.tensor,
+                        target_label=m.model_output,
+                        model_outputs=result.model_outputs,
+                        original_image=disp,
+                    )
+                    cam_results.append(grad)
+                cam.close()
+
                 grad_cam_ms = (time.perf_counter() - t0) * 1000.0
 
-                # Save contact sheet (single heatmap for the top supported finding).
-                from PIL import Image as PILImage
-
-                sheet_name = f"{analysis_id}_gradcam.png"
+                # Build contact sheet (6 cols x 3 rows = 18 cells).
+                sheet = generate_contact_sheet(
+                    cam_results,
+                    original_image=disp,
+                    cols=6,
+                    rows=3,
+                    cell_size=224,
+                )
+                sheet_name = f"{analysis_id}_gradcam_contact_sheet.png"
                 sheet_path = STORAGE_CONFIG.temp_dir / sheet_name
-                PILImage.fromarray(grad.overlay).save(sheet_path)
+                save_contact_sheet(sheet, str(sheet_path))
                 grad_cam_path = str(sheet_path)
-                cam.close()
 
         # ---------- Stage B: Qwen report generation (required) ----------
         verification_info = {
@@ -363,6 +375,7 @@ class InferenceService:
             mappings=mappings,
             model_doc=model_doc,
             image_path=image_path,
+            contact_sheet_path=grad_cam_path,
         )
         verification_ms = (time.perf_counter() - t0) * 1000.0
         verification_info["available"] = vr.available
@@ -415,6 +428,7 @@ class InferenceService:
         rd.heatmap_label = (
             supported[0].requested_label if (generate_grad_cam and supported) else None
         )
+        rd.contact_sheet_path = grad_cam_path
         rd.verification_available = verification_info["available"]
         rd.verification_error = verification_info["error"]
         rd.verification_result = vr

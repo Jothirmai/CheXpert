@@ -98,3 +98,38 @@ def download_report(
         media_type=media_type,
         filename=f"chest_xpert_report_{analysis_id}.{format}",
     )
+
+
+@router.get("/{analysis_id}/contact-sheet")
+def download_contact_sheet(
+    analysis_id: str,
+    api_key: str | None = Security(get_api_key),
+):
+    """Download the Grad-CAM contact sheet image."""
+    if inference_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Backend services not initialized.",
+        )
+
+    job = inference_service.get_job(analysis_id)
+    if job is None or job.result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis {analysis_id} not found or not completed.",
+        )
+
+    from backend.config import STORAGE_CONFIG
+
+    contact_sheet_path = STORAGE_CONFIG.temp_dir / f"{analysis_id}_gradcam_contact_sheet.png"
+    if not contact_sheet_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Contact sheet not found for {analysis_id}.",
+        )
+
+    return FileResponse(
+        path=str(contact_sheet_path),
+        media_type="image/png",
+        filename=f"chest_xpert_contact_sheet_{analysis_id}.png",
+    )

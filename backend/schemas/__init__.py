@@ -94,6 +94,8 @@ class AnalysisResponse(BaseModel):
     total_latency_ms: Optional[float] = None
     report_available: bool = False
     grad_cam_available: bool = False
+    contact_sheet_available: bool = False
+    contact_sheet_url: Optional[str] = None
     disclaimer: str
 
 

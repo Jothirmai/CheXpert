@@ -130,6 +130,8 @@ async def create_analysis(
         total_latency_ms=None,
         report_available=False,
         grad_cam_available=False,
+        contact_sheet_available=False,
+        contact_sheet_url=None,
         disclaimer="AI-generated research draft requiring review by a qualified radiologist. Not a final clinical diagnosis. Prediction scores are not calibrated probabilities or clinical confidence.",
     )
 
@@ -175,6 +177,8 @@ def get_analysis(analysis_id: str, api_key: str | None = Security(get_api_key)) 
             total_latency_ms=None,
             report_available=False,
             grad_cam_available=False,
+            contact_sheet_available=False,
+            contact_sheet_url=None,
             disclaimer=disclaimer,
         )
 
@@ -201,6 +205,8 @@ def get_analysis(analysis_id: str, api_key: str | None = Security(get_api_key)) 
             total_latency_ms=None,
             report_available=False,
             grad_cam_available=False,
+            contact_sheet_available=False,
+            contact_sheet_url=None,
             disclaimer=disclaimer,
         )
 
@@ -227,6 +233,8 @@ def get_analysis(analysis_id: str, api_key: str | None = Security(get_api_key)) 
             total_latency_ms=None,
             report_available=False,
             grad_cam_available=False,
+            contact_sheet_available=False,
+            contact_sheet_url=None,
             disclaimer=disclaimer,
         )
 
@@ -261,5 +269,10 @@ def get_analysis(analysis_id: str, api_key: str | None = Security(get_api_key)) 
         total_latency_ms=result.get("total_latency_ms"),
         report_available=result.get("report_available", False),
         grad_cam_available=result.get("grad_cam_available", False),
+        contact_sheet_available=result.get("grad_cam_available", False),
+        contact_sheet_url=(
+            f"/api/v1/report/{analysis_id}/contact-sheet"
+            if result.get("grad_cam_available") else None
+        ),
         disclaimer=disclaimer,
     )
