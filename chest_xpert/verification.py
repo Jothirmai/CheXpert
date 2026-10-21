@@ -447,18 +447,20 @@ class LLMModelClient:
 
     def __init__(
         self,
-        model_id: str = "Qwen/Qwen3-VL-32B-Instruct",
+        model_id: str | None = None,
         backend: str = "transformers_local",
         force_cpu: bool = False,
         vllm_url: str = "",
         load_in_4bit: bool = True,
     ):
-        self.model_id = model_id
+        from chest_xpert.config import LLM_MODEL_CONFIG
+
+        self.model_id = model_id or LLM_MODEL_CONFIG.model_id
         self.backend = backend
         self.force_cpu = force_cpu
         self.vllm_url = vllm_url
         self.load_in_4bit = load_in_4bit
-        self._is_vlm = _is_vlm_model(model_id)
+        self._is_vlm = _is_vlm_model(self.model_id)
         self._token = None
         self._model = None
         self._processor = None
@@ -494,18 +496,18 @@ class LLMModelClient:
              still see the image, fits comfortably in available VRAM.
           3. Template fallback (no LLM) if both fail.
         """
-        fallback_model = "Qwen/Qwen2-VL-2B-Instruct"
+        fallback_model = "Qwen/Qwen2.5-1.5B-Instruct"
 
         try:
             self._load_single_model(self.model_id)
         except Exception as exc:  # noqa: BLE001
             self._load_error = f"Primary model '{self.model_id}' failed: {exc}"
-            # Try small VLM fallback (can see images, unlike text-only models).
+            # Try small text-only fallback (reliable on CPU).
             try:
                 fallback_client = LLMModelClient(
                     model_id=fallback_model,
                     backend="transformers_local",
-                    force_cpu=False,
+                    force_cpu=True,
                     load_in_4bit=False,
                 )
                 self._model = fallback_client._model
@@ -517,7 +519,7 @@ class LLMModelClient:
             except Exception as exc2:  # noqa: BLE001
                 self._load_error = (
                     f"Primary model '{self.model_id}' failed: {exc}; "
-                    f"VLM fallback '{fallback_model}' also failed: {exc2}"
+                    f"fallback '{fallback_model}' also failed: {exc2}"
                 )
                 self._model = None
                 self._processor = None
@@ -561,9 +563,9 @@ class LLMModelClient:
                 load_kwargs["torch_dtype"] = torch.float16
                 load_kwargs["device_map"] = {"": 0}
             except Exception:
-                # bitsandbytes broken — fall back to FP16 on GPU.
-                load_kwargs["torch_dtype"] = torch.float16
-                load_kwargs["device_map"] = {"": 0}
+                # bitsandbytes broken — fall back to CPU.
+                load_kwargs["torch_dtype"] = torch.float32
+                load_kwargs["device_map"] = None
         else:
             # Force CPU to avoid Qwen2-VL device mapping issues.
             load_kwargs["torch_dtype"] = torch.float32
@@ -792,9 +794,17 @@ class LLMModelClient:
                     return_tensors="pt",
                 )
 
-            # Move inputs to model device.
+            # Explicitly move every tensor to the model device.
+            # BatchEncoding.to() may not move image_grid_thw correctly.
             model_device = next(self._model.parameters()).device
-            inputs = inputs.to(model_device)
+            moved: dict = {}
+            for key, value in inputs.items():
+                if hasattr(value, "to"):
+                    moved[key] = value.to(model_device)
+                else:
+                    moved[key] = value
+            inputs = moved
+
             with torch.no_grad():
                 out = self._model.generate(
                     **inputs, max_new_tokens=1024,
