@@ -64,9 +64,8 @@ class AnalysisCreateRequest(BaseModel):
 
 class LabelScore(BaseModel):
     label: str
-    score: Optional[float] = None
-    supported: bool
     severity: str = "not assessed"
+    supported: bool
 
 
 class ModalityInfo(BaseModel):
@@ -89,6 +88,7 @@ class AnalysisResponse(BaseModel):
     status: JobStatus
     created_at: datetime
     modality: ModalityInfo
+    verification: VerificationInfo
     labels: list[LabelScore]
     inference_latency_ms: Optional[float] = None
     total_latency_ms: Optional[float] = None

@@ -14,9 +14,7 @@ export function LabelRow({ label }: LabelRowProps) {
     <View style={styles.row}>
       <View style={styles.labelContainer}>
         <Text style={styles.labelName}>{label.label}</Text>
-        <Text style={styles.labelScore}>
-          {label.score != null ? label.score.toFixed(3) : "n/a"}
-        </Text>
+        <Text style={styles.labelScore}>{label.severity}</Text>
       </View>
       <View style={styles.badgeContainer}>
         <View style={[styles.badge, { backgroundColor: `${color}20`, borderColor: color }]}>
@@ -48,6 +46,7 @@ const styles = StyleSheet.create({
   },
   labelScore: {
     ...typography.bodyMuted,
+    fontStyle: "italic" as const,
   },
   badgeContainer: {
     alignItems: "flex-end",

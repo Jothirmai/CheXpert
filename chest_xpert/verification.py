@@ -436,88 +436,100 @@ class LLMModelClient:
     def _ensure_local_loaded(self) -> None:
         """Load model locally via transformers.
 
-        For Qwen3-VL-32B: uses 4-bit quantization to fit on 32 GB V100.
-        For small text models (TinyLlama-1.1B): runs on CPU.
+        Tries the configured model first (Qwen3-VL-32B 4-bit per the notebook),
+        then falls back to Qwen2.5-1.5B text-only on CPU if the primary
+        model cannot load (bitsandbytes/OOM/VRAM constraints).
         """
+        fallback_model = "Qwen/Qwen2.5-1.5B-Instruct"
+
         try:
-            from transformers import AutoProcessor, AutoModelForCausalLM
-            import torch
+            self._load_single_model(self.model_id)
+        except Exception as exc:  # noqa: BLE001
+            self._load_error = f"Primary model '{self.model_id}' failed: {exc}"
+            # Try fallback model (text-only, CPU-only to avoid full V100).
+            try:
+                import os as _os
+                # Hide the GPU so the fallback model runs purely on CPU
+                # and never attempts any CUDA allocation.
+                _os.environ["CUDA_VISIBLE_DEVICES"] = ""
+                import torch as _torch
+                if _torch.cuda.is_available():
+                    _torch.cuda.empty_cache()
 
-            # Qwen VL models use AutoProcessor + Qwen3VLForConditionalGeneration
-            if "VL" in self.model_id or "vl" in self.model_id:
-                from transformers import Qwen3VLForConditionalGeneration
-                from transformers import BitsAndBytesConfig
-
-                self._processor = AutoProcessor.from_pretrained(
-                    self.model_id, trust_remote_code=True
+                fallback_client = LLMModelClient(
+                    model_id=fallback_model,
+                    backend="transformers_local",
+                    force_cpu=True,
+                    load_in_4bit=False,
                 )
-
-                load_kwargs: dict = {}
-                if (self.load_in_4bit
-                        and torch.cuda.is_available()
-                        and not self.force_cpu):
-                    load_kwargs["load_in_4bit"] = True
-                    load_kwargs["torch_dtype"] = torch.float16
-                    load_kwargs["device_map"] = "auto"
-                else:
-                    load_kwargs["torch_dtype"] = torch.float32
-                    load_kwargs["device_map"] = None
-
-                self._model = Qwen3VLForConditionalGeneration.from_pretrained(
-                    self.model_id,
-                    trust_remote_code=True,
-                    **load_kwargs,
+                self._model = fallback_client._model
+                self._processor = fallback_client._processor
+                self.model_id = fallback_model
+                self.force_cpu = True
+                self._load_error = None
+            except Exception as exc2:  # noqa: BLE001
+                self._load_error = (
+                    f"Primary model '{self.model_id}' failed: {exc}; "
+                    f"fallback '{fallback_model}' also failed: {exc2}"
                 )
-                self._model.eval()
-            else:
-                # Small text-only models (TinyLlama, Qwen2.5-0.5B,
-                # Qwen2.5-1.5B, etc.)
-                self._processor = AutoProcessor.from_pretrained(
-                    self.model_id, trust_remote_code=True
-                )
-
-                load_kwargs: dict = {}
-                if not self.force_cpu and torch.cuda.is_available():
-                    load_kwargs["torch_dtype"] = torch.float16
-                    load_kwargs["device_map"] = "auto"
-                else:
-                    load_kwargs["torch_dtype"] = torch.float32
-                    load_kwargs["device_map"] = None
-
-                self._model = AutoModelForCausalLM.from_pretrained(
-                    self.model_id,
-                    trust_remote_code=True,
-                    **load_kwargs,
-                )
-                self._model.eval()
-        except RuntimeError as exc:
-            if ("out of memory" in str(exc).lower()
-                    and not self.force_cpu):
-                try:
-                    torch.cuda.empty_cache()
-                    from transformers import AutoModelForCausalLM
-
-                    self._model = AutoModelForCausalLM.from_pretrained(
-                        self.model_id,
-                        torch_dtype=torch.float32,
-                        device_map=None,
-                    )
-                    self._model.eval()
-                except Exception as exc2:  # noqa: BLE001
-                    self._load_error = (
-                        f"Failed to load model locally (OOM on GPU and "
-                        f"CPU): {exc2}"
-                    )
-                    self._model = None
-                    self._processor = None
-            else:
-                self._load_error = f"Failed to load model locally: {exc}"
                 self._model = None
                 self._processor = None
-        except Exception as exc:  # noqa: BLE001
-            self._load_error = f"Failed to load model locally: {exc}"
-            self._model = None
-            self._processor = None
+
+    def _load_single_model(self, model_id: str) -> None:
+        """Load a single model via transformers.
+
+        For Qwen VL models: uses 4-bit quantization to fit on 32 GB V100.
+        For small text models (Qwen2.5-1.5B): runs on CPU.
+        """
+        from transformers import AutoProcessor, AutoModelForCausalLM
+        import torch
+
+        # Qwen VL models use AutoProcessor + Qwen3VLForConditionalGeneration
+        if "VL" in model_id or "vl" in model_id:
+            from transformers import Qwen3VLForConditionalGeneration
+            from transformers import BitsAndBytesConfig
+
+            self._processor = AutoProcessor.from_pretrained(
+                model_id, trust_remote_code=True
+            )
+
+            load_kwargs: dict = {}
+            if (self.load_in_4bit
+                    and torch.cuda.is_available()
+                    and not self.force_cpu):
+                load_kwargs["load_in_4bit"] = True
+                load_kwargs["torch_dtype"] = torch.float16
+                load_kwargs["device_map"] = "auto"
+            else:
+                load_kwargs["torch_dtype"] = torch.float32
+                load_kwargs["device_map"] = None
+
+            self._model = Qwen3VLForConditionalGeneration.from_pretrained(
+                model_id,
+                trust_remote_code=True,
+                **load_kwargs,
+            )
+            self._model.eval()
+        else:
+            # Small text-only models (Qwen2.5-1.5B, etc.)
+            self._processor = AutoProcessor.from_pretrained(
+                model_id, trust_remote_code=True
+            )
+
+            load_kwargs: dict = {}
+            if not self.force_cpu and torch.cuda.is_available():
+                load_kwargs["torch_dtype"] = torch.float16
+                load_kwargs["device_map"] = "auto"
+            else:
+                load_kwargs["torch_dtype"] = torch.float32
+                load_kwargs["device_map"] = None
+
+            self._model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                trust_remote_code=True,
+                **load_kwargs,
+            )
+            self._model.eval()
 
     def verify(
         self,

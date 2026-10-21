@@ -20,7 +20,6 @@ import torch
 # Existing Chest Xpert modules (imported lazily to avoid torch overhead at import
 # time when only health checks are needed).
 from backend.config import (
-    LLM_CONFIG,
     MODEL_CONFIG,
     MODALITY_CONFIG,
     STORAGE_CONFIG,
@@ -302,7 +301,6 @@ class InferenceService:
             label_list.append(
                 {
                     "label": m.requested_label,
-                    "score": round(m.score, 4) if m.score is not None else None,
                     "supported": m.supported,
                     "severity": sev,
                 }
@@ -342,7 +340,7 @@ class InferenceService:
                 grad_cam_path = str(sheet_path)
                 cam.close()
 
-        # ---------- Stage B: optional LLM verification ----------
+        # ---------- Stage B: Qwen report generation (required) ----------
         verification_info = {
             "available": False,
             "model": None,
@@ -352,42 +350,41 @@ class InferenceService:
         }
         report_findings = None
 
-        if LLM_CONFIG.enabled:
-            from chest_xpert.verification import VerificationEngine
+        from chest_xpert.verification import VerificationEngine
 
-            ve = VerificationEngine()
-            model_doc = (
-                "torchxrayvision DenseNet-121 (densenet121-res224-all), "
-                "pre-trained weights by other researchers. Scores are raw model "
-                "outputs, not calibrated probabilities."
-            )
-            t0 = time.perf_counter()
-            vr = ve.verify(
-                mappings=mappings,
-                model_doc=model_doc,
-                image_path=image_path,
-            )
-            verification_ms = (time.perf_counter() - t0) * 1000.0
-            verification_info["available"] = vr.available
-            verification_info["model"] = vr.model_id or None
-            verification_info["latency_ms"] = round(vr.latency_ms, 2)
-            verification_info["error"] = vr.error
-            n_cons = sum(1 for it in vr.items if it.assessment == "consistent")
-            n_incon = sum(1 for it in vr.items if it.assessment == "inconsistent")
-            n_unc = sum(1 for it in vr.items if it.assessment == "uncertain")
-            verification_info["agreement"] = (
-                f"{n_cons} consistent · {n_incon} inconsistent · {n_unc} uncertain"
-            )
-            if vr.report_findings:
-                report_findings = [
-                    {
-                        "pathology": f.pathology,
-                        "status": f.status,
-                        "evidence_basis": f.evidence_basis,
-                        "recommended_wording": f.recommended_wording,
-                    }
-                    for f in vr.report_findings
-                ]
+        ve = VerificationEngine()
+        model_doc = (
+            "torchxrayvision DenseNet-121 (densenet121-res224-all), "
+            "pre-trained weights by other researchers. Scores are raw model "
+            "outputs, not calibrated probabilities."
+        )
+        t0 = time.perf_counter()
+        vr = ve.verify(
+            mappings=mappings,
+            model_doc=model_doc,
+            image_path=image_path,
+        )
+        verification_ms = (time.perf_counter() - t0) * 1000.0
+        verification_info["available"] = vr.available
+        verification_info["model"] = vr.model_id or None
+        verification_info["latency_ms"] = round(vr.latency_ms, 2)
+        verification_info["error"] = vr.error
+        n_cons = sum(1 for it in vr.items if it.assessment == "consistent")
+        n_incon = sum(1 for it in vr.items if it.assessment == "inconsistent")
+        n_unc = sum(1 for it in vr.items if it.assessment == "uncertain")
+        verification_info["agreement"] = (
+            f"{n_cons} consistent · {n_incon} inconsistent · {n_unc} uncertain"
+        )
+        if vr.report_findings:
+            report_findings = [
+                {
+                    "pathology": f.pathology,
+                    "status": f.status,
+                    "evidence_basis": f.evidence_basis,
+                    "recommended_wording": f.recommended_wording,
+                }
+                for f in vr.report_findings
+            ]
 
         # ---------- Stage C/D: report data ----------
         from chest_xpert.report import ExamDetails, ReportData, generate_html, generate_pdf

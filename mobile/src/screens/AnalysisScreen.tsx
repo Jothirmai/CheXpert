@@ -238,8 +238,7 @@ export function AnalysisScreen() {
               </Text>
             </Text>
             <Text style={{ ...typography.body }}>
-              Inference time:{" "}
-              <Text style={{ fontWeight: "600" }}>{currentAnalysis.inference_latency_ms?.toFixed(0)} ms</Text>
+              Inference complete.
             </Text>
           </Card>
 

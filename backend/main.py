@@ -20,6 +20,7 @@ from backend.security.auth import get_api_key
 from backend.services.cleanup_service import cleanup_service
 from backend.services.inference_service import InferenceService, inference_service
 from backend.services.job_manager import JobManager
+from backend.services.modality_warmup import warmup_modality
 
 # Singletons created at startup.
 job_manager = JobManager(inference_service)
@@ -33,6 +34,9 @@ admin.init_admin_routers(job_manager)
 async def lifespan(app: FastAPI):
     # Startup.
     ensure_dirs()
+    # Eager-load CLIP modality validator so the first request doesn't pay
+    # the ~6-7s model-loading cost.
+    await warmup_modality()
     # Load the classifier model eagerly so /ready reflects reality.
     ok, err = await inference_service.ensure_model_loaded()
     if not ok:

@@ -135,6 +135,36 @@ export function ReportScreen() {
       </Card>
 
       <Card style={{ marginBottom: spacing.md }}>
+        <Text style={{ ...typography.h3, marginBottom: spacing.sm }}>Qwen Report Generation</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+          <View
+            style={{
+              width: 10,
+              height: 10,
+              borderRadius: 5,
+              backgroundColor:
+                analysis.verification.available ? Colors.success : Colors.warning,
+            }}
+          />
+          <Text style={{ ...typography.body }}>
+            {analysis.verification.available
+              ? "Qwen report generated"
+              : "Qwen unavailable — template fallback used"}
+          </Text>
+        </View>
+        {analysis.verification.model && (
+          <Text style={{ ...typography.caption, marginTop: spacing.xs }}>
+            Model: {analysis.verification.model}
+          </Text>
+        )}
+        {analysis.verification.error && (
+          <Text style={{ ...typography.caption, marginTop: spacing.xs }}>
+            {analysis.verification.error}
+          </Text>
+        )}
+      </Card>
+
+      <Card style={{ marginBottom: spacing.md }}>
         <Text style={{ ...typography.h3, marginBottom: spacing.sm }}>Findings (18 labels)</Text>
         {supportedLabels.map((label) => (
           <LabelRow key={label.label} label={label} />

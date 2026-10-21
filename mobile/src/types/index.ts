@@ -1,8 +1,7 @@
 export interface LabelScore {
   label: string;
-  score: number | null;
-  supported: boolean;
   severity: string;
+  supported: boolean;
 }
 
 export interface ModalityInfo {

@@ -37,15 +37,6 @@ def init_routers(service: InferenceService, job_manager: JobManager) -> None:
     _job_manager = job_manager
 
 
-def _to_label_score(item: dict) -> LabelScore:
-    return LabelScore(
-        label=item["label"],
-        score=item["score"],
-        supported=item["supported"],
-        severity=item["severity"],
-    )
-
-
 @router.post(
     "",
     response_model=AnalysisResponse,
@@ -127,6 +118,13 @@ async def create_analysis(
             model=None,
             latency_ms=None,
         ),
+        verification=VerificationInfo(
+            available=False,
+            model=None,
+            latency_ms=None,
+            error=None,
+            agreement=None,
+        ),
         labels=[],
         inference_latency_ms=None,
         total_latency_ms=None,
@@ -165,6 +163,13 @@ def get_analysis(analysis_id: str, api_key: str | None = Security(get_api_key)) 
                 model=None,
                 latency_ms=None,
             ),
+            verification=VerificationInfo(
+                available=False,
+                model=None,
+                latency_ms=None,
+                error=None,
+                agreement=None,
+            ),
             labels=[],
             inference_latency_ms=None,
             total_latency_ms=None,
@@ -184,6 +189,13 @@ def get_analysis(analysis_id: str, api_key: str | None = Security(get_api_key)) 
                 model=None,
                 latency_ms=None,
             ),
+            verification=VerificationInfo(
+                available=False,
+                model=None,
+                latency_ms=None,
+                error=None,
+                agreement=None,
+            ),
             labels=[],
             inference_latency_ms=None,
             total_latency_ms=None,
@@ -202,6 +214,13 @@ def get_analysis(analysis_id: str, api_key: str | None = Security(get_api_key)) 
                 reason=job.error or "Analysis failed.",
                 model=None,
                 latency_ms=None,
+            ),
+            verification=VerificationInfo(
+                available=False,
+                model=None,
+                latency_ms=None,
+                error=job.error or "Analysis failed.",
+                agreement=None,
             ),
             labels=[],
             inference_latency_ms=None,
@@ -223,7 +242,21 @@ def get_analysis(analysis_id: str, api_key: str | None = Security(get_api_key)) 
             model=result.get("modality", {}).get("model"),
             latency_ms=result.get("modality", {}).get("latency_ms"),
         ),
-        labels=[_to_label_score(l) for l in result.get("labels", [])],
+        labels=[
+            LabelScore(
+                label=l["label"],
+                severity=l["severity"],
+                supported=l["supported"],
+            )
+            for l in result.get("labels", [])
+        ],
+        verification=VerificationInfo(
+            available=result.get("verification", {}).get("available", False),
+            model=result.get("verification", {}).get("model"),
+            latency_ms=result.get("verification", {}).get("latency_ms"),
+            error=result.get("verification", {}).get("error"),
+            agreement=result.get("verification", {}).get("agreement"),
+        ),
         inference_latency_ms=result.get("inference_latency_ms"),
         total_latency_ms=result.get("total_latency_ms"),
         report_available=result.get("report_available", False),
