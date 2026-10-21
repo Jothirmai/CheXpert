@@ -466,6 +466,7 @@ class LLMModelClient:
                 self._processor = fallback_client._processor
                 self.model_id = fallback_model
                 self.force_cpu = True
+                self._is_vlm = _is_vlm_model(fallback_model)
                 self._load_error = None
             except Exception as exc2:  # noqa: BLE001
                 self._load_error = (
