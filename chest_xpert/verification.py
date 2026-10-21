@@ -238,6 +238,40 @@ def _validate_and_build_items(
     supported_by_name = {
         m.requested_label: m for m in mappings if m.supported
     }
+    # Normalize common LLM output variations to standard label names.
+    # LLMs often use plural forms or slight variations (e.g. "Infiltrates"
+    # instead of "Infiltration", "Pleural Effusion" instead of "Effusion").
+    PATHOLOGY_SYNONYMS = {
+        "infiltrates": "Infiltration",
+        "infiltration": "Infiltration",
+        "pleural effusion": "Effusion",
+        "effusion": "Effusion",
+        "atelectasis": "Atelectasis",
+        "consolidation": "Consolidation",
+        "pneumothorax": "Pneumothorax",
+        "edema": "Edema",
+        "pulmonary edema": "Edema",
+        "emphysema": "Emphysema",
+        "fibrosis": "Fibrosis",
+        "pulmonary fibrosis": "Fibrosis",
+        "pneumonia": "Pneumonia",
+        "pleural thickening": "Pleural Thickening",
+        "cardiomegaly": "Cardiomegaly",
+        "nodule": "Nodule",
+        "lung nodule": "Nodule",
+        "mass": "Mass",
+        "lung mass": "Mass",
+        "hernia": "Hernia",
+        "diaphragmatic hernia": "Hernia",
+        "lung lesion": "Lung Lesion",
+        "lesion": "Lung Lesion",
+        "fracture": "Fracture",
+        "rib fracture": "Fracture",
+        "lung opacity": "Lung Opacity",
+        "opacity": "Lung Opacity",
+        "enlarged cardiomediastinum": "Enlarged Cardiomediastinum",
+        "cardiomediastinum": "Enlarged Cardiomediastinum",
+    }
     raw_items = parsed.get("items", [])
     if not isinstance(raw_items, list):
         warnings.append("'items' is not a list; verification treated as "
@@ -249,7 +283,13 @@ def _validate_and_build_items(
             warnings.append("Skipping non-object item in verification output.")
             continue
         pathology = entry.get("pathology")
-        if pathology not in supported_by_name:
+        if not pathology:
+            warnings.append("Skipping item with missing pathology name.")
+            continue
+        # Normalize: case-insensitive lookup with synonym map.
+        pathology_key = str(pathology).strip().lower()
+        normalized = PATHOLOGY_SYNONYMS.get(pathology_key, pathology)
+        if normalized not in supported_by_name:
             warnings.append(
                 f"Skipping unsupported/unrecognized pathology: {pathology}")
             continue
@@ -264,10 +304,10 @@ def _validate_and_build_items(
                 score = float(score)
             except (TypeError, ValueError):
                 score = None
-        mapping = supported_by_name[pathology]
+        mapping = supported_by_name[normalized]
         items.append(
             VerificationItem(
-                pathology=pathology,
+                pathology=normalized,
                 classifier_score=(
                     score if score is not None else mapping.score
                 ),
@@ -436,42 +476,37 @@ class LLMModelClient:
     def _ensure_local_loaded(self) -> None:
         """Load model locally via transformers.
 
-        Tries the configured model first (Qwen3-VL-32B 4-bit per the notebook),
-        then falls back to Qwen2.5-1.5B text-only on CPU if the primary
-        model cannot load (bitsandbytes/OOM/VRAM constraints).
+        Fallback chain:
+          1. Configured model (Qwen3-VL-32B-Instruct per the notebook) —
+             vision-language, can see the X-ray image.
+          2. Qwen2-VL-2B-Instruct — small vision-language fallback that can
+             still see the image, fits comfortably in available VRAM.
+          3. Template fallback (no LLM) if both fail.
         """
-        fallback_model = "Qwen/Qwen2.5-1.5B-Instruct"
+        fallback_model = "Qwen/Qwen2-VL-2B-Instruct"
 
         try:
             self._load_single_model(self.model_id)
         except Exception as exc:  # noqa: BLE001
             self._load_error = f"Primary model '{self.model_id}' failed: {exc}"
-            # Try fallback model (text-only, CPU-only to avoid full V100).
+            # Try small VLM fallback (can see images, unlike text-only models).
             try:
-                import os as _os
-                # Hide the GPU so the fallback model runs purely on CPU
-                # and never attempts any CUDA allocation.
-                _os.environ["CUDA_VISIBLE_DEVICES"] = ""
-                import torch as _torch
-                if _torch.cuda.is_available():
-                    _torch.cuda.empty_cache()
-
                 fallback_client = LLMModelClient(
                     model_id=fallback_model,
                     backend="transformers_local",
-                    force_cpu=True,
+                    force_cpu=False,
                     load_in_4bit=False,
                 )
                 self._model = fallback_client._model
                 self._processor = fallback_client._processor
                 self.model_id = fallback_model
-                self.force_cpu = True
                 self._is_vlm = _is_vlm_model(fallback_model)
+                self.force_cpu = fallback_client.force_cpu
                 self._load_error = None
             except Exception as exc2:  # noqa: BLE001
                 self._load_error = (
                     f"Primary model '{self.model_id}' failed: {exc}; "
-                    f"fallback '{fallback_model}' also failed: {exc2}"
+                    f"VLM fallback '{fallback_model}' also failed: {exc2}"
                 )
                 self._model = None
                 self._processor = None
@@ -479,58 +514,55 @@ class LLMModelClient:
     def _load_single_model(self, model_id: str) -> None:
         """Load a single model via transformers.
 
-        For Qwen VL models: uses 4-bit quantization to fit on 32 GB V100.
-        For small text models (Qwen2.5-1.5B): runs on CPU.
+        For Qwen VL models: loads on GPU (FP16 or 4-bit if bitsandbytes works).
+        For small text-only models: runs on CPU.
         """
-        from transformers import AutoProcessor, AutoModelForCausalLM
+        from transformers import AutoProcessor
         import torch
 
-        # Qwen VL models use AutoProcessor + Qwen3VLForConditionalGeneration
-        if "VL" in model_id or "vl" in model_id:
+        # Select the correct VLM model class based on model id.
+        is_qwen3_vl = "Qwen3-VL" in model_id or "qwen3-vl" in model_id.lower()
+        is_qwen2_vl = "Qwen2-VL" in model_id or "qwen2-vl" in model_id.lower()
+
+        if is_qwen3_vl:
             from transformers import Qwen3VLForConditionalGeneration
-            from transformers import BitsAndBytesConfig
+            vlm_model_class = Qwen3VLForConditionalGeneration
+        elif is_qwen2_vl:
+            from transformers import Qwen2VLForConditionalGeneration
+            vlm_model_class = Qwen2VLForConditionalGeneration
+        else:
+            # Generic VLM fallback — try Qwen3 class.
+            from transformers import Qwen3VLForConditionalGeneration
+            vlm_model_class = Qwen3VLForConditionalGeneration
 
-            self._processor = AutoProcessor.from_pretrained(
-                model_id, trust_remote_code=True
-            )
+        from transformers import BitsAndBytesConfig
 
-            load_kwargs: dict = {}
-            if (self.load_in_4bit
-                    and torch.cuda.is_available()
-                    and not self.force_cpu):
+        self._processor = AutoProcessor.from_pretrained(
+            model_id, trust_remote_code=True
+        )
+
+        load_kwargs: dict = {}
+        if (self.load_in_4bit
+                and torch.cuda.is_available()
+                and not self.force_cpu):
+            try:
                 load_kwargs["load_in_4bit"] = True
                 load_kwargs["torch_dtype"] = torch.float16
                 load_kwargs["device_map"] = "auto"
-            else:
-                load_kwargs["torch_dtype"] = torch.float32
-                load_kwargs["device_map"] = None
-
-            self._model = Qwen3VLForConditionalGeneration.from_pretrained(
-                model_id,
-                trust_remote_code=True,
-                **load_kwargs,
-            )
-            self._model.eval()
-        else:
-            # Small text-only models (Qwen2.5-1.5B, etc.)
-            self._processor = AutoProcessor.from_pretrained(
-                model_id, trust_remote_code=True
-            )
-
-            load_kwargs: dict = {}
-            if not self.force_cpu and torch.cuda.is_available():
+            except Exception:
+                # bitsandbytes broken — fall back to FP16 on GPU.
                 load_kwargs["torch_dtype"] = torch.float16
                 load_kwargs["device_map"] = "auto"
-            else:
-                load_kwargs["torch_dtype"] = torch.float32
-                load_kwargs["device_map"] = None
+        else:
+            load_kwargs["torch_dtype"] = torch.float16
+            load_kwargs["device_map"] = "auto"
 
-            self._model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                trust_remote_code=True,
-                **load_kwargs,
-            )
-            self._model.eval()
+        self._model = vlm_model_class.from_pretrained(
+            model_id,
+            trust_remote_code=True,
+            **load_kwargs,
+        )
+        self._model.eval()
 
     def verify(
         self,

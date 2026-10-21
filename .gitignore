@@ -14,6 +14,11 @@ env/
 conda-meta/
 conda-build/
 
+# PyCache
+chest_xpert/__pycache__/
+backend/__pycache__/
+tests/__pycache__/
+
 # IDE
 .vscode/
 .idea/

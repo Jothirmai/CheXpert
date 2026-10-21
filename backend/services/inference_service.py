@@ -417,12 +417,14 @@ class InferenceService:
         )
         rd.verification_available = verification_info["available"]
         rd.verification_error = verification_info["error"]
+        rd.verification_result = vr
+        rd.verification_ms = verification_ms
         rd.impression = request_data.get("impression", "")
         rd.reviewer_name = request_data.get("reviewer_name")
         rd.review_status = request_data.get("review_status", "Pending")
         rd.notes = request_data.get("notes", "")
 
-        total_ms = inference_ms + (modality_ms or 0) + (grad_cam_ms or 0)
+        total_ms = inference_ms + (modality_ms or 0) + (grad_cam_ms or 0) + verification_ms
 
         # Persist HTML report.
         html = generate_html(rd)
