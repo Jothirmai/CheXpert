@@ -279,19 +279,25 @@ class ModalityValidator:
             if not self.config.device.startswith("cuda"):
                 raise RuntimeError("CLIP inference requires a CUDA device")
             model_id = self.config.model_id
-            self._clip_processor = CLIPProcessor.from_pretrained(model_id)
-            from huggingface_hub.constants import HF_HUB_CACHE
-            cached = Path(HF_HUB_CACHE) / ("models--" + model_id.replace("/", "--"))
-            safe_weights = list(cached.glob("snapshots/*/model.safetensors"))
-            if safe_weights:
-                from transformers import CLIPConfig
-                from safetensors.torch import load_file
-                self._clip_model = CLIPModel(CLIPConfig.from_pretrained(model_id))
-                state = load_file(str(safe_weights[0]))
-                state = {key: value for key, value in state.items() if not key.endswith(".position_ids")}
-                self._clip_model.load_state_dict(state, strict=True)
-            else:
-                self._clip_model = CLIPModel.from_pretrained(model_id, use_safetensors=True)
+            from huggingface_hub import hf_hub_download
+            from safetensors.torch import load_file
+            from transformers import CLIPConfig
+            from chest_xpert.model_revisions import CLIP_CONFIG_REVISION, CLIP_SAFETENSORS_REVISION
+
+            self._clip_processor = CLIPProcessor.from_pretrained(
+                model_id, revision=CLIP_CONFIG_REVISION
+            )
+            weights = hf_hub_download(
+                repo_id=model_id,
+                filename="model.safetensors",
+                revision=CLIP_SAFETENSORS_REVISION,
+            )
+            self._clip_model = CLIPModel(
+                CLIPConfig.from_pretrained(model_id, revision=CLIP_CONFIG_REVISION)
+            )
+            state = load_file(weights)
+            state = {key: value for key, value in state.items() if not key.endswith(".position_ids")}
+            self._clip_model.load_state_dict(state, strict=True)
             self._clip_model.to(self.config.device)
             self._clip_model.eval()
         except Exception as exc:  # noqa: BLE001

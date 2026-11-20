@@ -1,11 +1,7 @@
 """Chest Xpert FastAPI backend entrypoint.
 
-Run with:
-    uvicorn backend.main:app --host 0.0.0.0 --port 8000
-
-Or from the project root:
-    source /home/doli/anaconda3/bin/activate hct-lsr
-    uvicorn backend.main:app --host 0.0.0.0 --port 8000
+Run from the repository root after following the README setup:
+    python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 """
 
 from __future__ import annotations

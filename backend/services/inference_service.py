@@ -1,6 +1,6 @@
 """Inference service wrapping the existing Chest Xpert modules.
 
-Reuses preprocessing, modality validation, DenseNet-121 inference, Grad-CAM,
+Reuses preprocessing, modality validation, the selected CNN ensemble, Grad-CAM,
 and report generation from the chest_xpert package. Runs expensive operations
 in background jobs with bounded concurrency.
 """
@@ -82,7 +82,7 @@ class InferenceService:
     # Model lifecycle
     # ------------------------------------------------------------------
     async def ensure_model_loaded(self) -> tuple[bool, Optional[str]]:
-        """Load the DenseNet-121 model once. Returns (ok, error).
+        """Load the selected CNN once. Returns (ok, error).
 
         Falls back to CPU if CUDA is out of memory (common on the shared V100).
         """
@@ -462,12 +462,34 @@ class InferenceService:
         if not vr.available or not v7_report_text:
             raise RuntimeError(vr.error or "Vision model did not produce a report.")
 
-        import json, re
-        match = re.search(r"\{.*\}", v7_report_text, re.S)
-        if not match:
-            raise RuntimeError("Vision model did not return a structured report; please retry.")
+        import json
         from chest_xpert.report_quality import parse_generated_sections
-        sections, schema_normalized = parse_generated_sections(v7_report_text, template["sections"])
+        try:
+            sections, schema_normalized = parse_generated_sections(v7_report_text, template["sections"])
+        except (ValueError, json.JSONDecodeError):
+            # Keep all original images, CNN scores, and contact-sheet evidence
+            # when retrying an invalid JSON draft. Never invent missing text.
+            retry_doc = model_doc + (
+                " Return one syntactically valid JSON object only. Escape quotes "
+                "and newlines inside text strings. Close every object and array; "
+                "do not include markdown or commentary."
+            )
+            vr = ve.generate_v7_report(
+                mappings=mappings,
+                model_doc=retry_doc,
+                patient_info=patient_info,
+                image_path=image_path,
+                contact_sheet_path=grad_cam_path,
+                self_correct=False,
+            )
+            if not vr.available or not vr.v7_report:
+                raise RuntimeError(vr.error or "Vision model did not produce a valid report")
+            v7_report_text = vr.v7_report
+            sections, schema_normalized = parse_generated_sections(v7_report_text, template["sections"])
+            verification_ms = (time.perf_counter() - t0) * 1000.0
+            verification_info.update(available=True, model=vr.model_id or None,
+                                     latency_ms=round(verification_ms, 2), error=None)
+            quality_warnings.append("The first draft had invalid JSON and was regenerated for review.")
         if schema_normalized:
             quality_warnings.append("Generated JSON layout was normalized; clinical text was preserved for review.")
         # Metadata sections must come from supplied metadata, never model guesses.

@@ -341,8 +341,12 @@ class LLMModelClient:
             tokenizer_class = AutoTokenizer
             use_fast = True
 
+        from chest_xpert.model_revisions import QWEN_MODEL_ID, QWEN_REVISION
+        model_revision = QWEN_REVISION if model_id == QWEN_MODEL_ID else None
         self._processor = tokenizer_class.from_pretrained(
-            model_id, trust_remote_code=True, use_fast=use_fast, min_pixels=256*28*28, max_pixels=768*28*28
+            model_id, trust_remote_code=True, use_fast=use_fast,
+            min_pixels=256*28*28, max_pixels=768*28*28,
+            **({"revision": model_revision} if model_revision else {}),
         )
 
         if not torch.cuda.is_available() or self.force_cpu:
@@ -375,6 +379,7 @@ class LLMModelClient:
         self._model = model_class.from_pretrained(
             model_id,
             trust_remote_code=True,
+            **({"revision": model_revision} if model_revision else {}),
             **load_kwargs,
         )
         self._model.eval()

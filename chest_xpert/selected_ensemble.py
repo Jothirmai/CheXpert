@@ -19,7 +19,6 @@ from torchvision import models, transforms
 ROOT = Path(__file__).resolve().parents[1]
 V6 = ROOT / 'checkpoints/chexpert_plus_densenet201_v6/best_model.pth'
 V12 = ROOT / 'checkpoints/chexpert_plus_impression_320_v12/best_model.pth'
-LABELS = ROOT / 'data/chexpert_plus_cnn_impression_v1/manifest.json'
 
 
 class SelectedEnsembleEngine:
@@ -29,12 +28,14 @@ class SelectedEnsembleEngine:
         if not device.startswith('cuda') or not torch.cuda.is_available():
             raise RuntimeError('Selected CNN ensemble requires CUDA')
         self.device = device
-        self.labels = json.loads(LABELS.read_text())['labels']
+        from chest_xpert.model_selection import selection
+        selected = selection().get('cnn', {})
+        self.labels = selected.get('labels', [])
+        if len(self.labels) != 14 or len(set(self.labels)) != 14:
+            raise ValueError('Selected CNN requires 14 unique labels in checkpoints/active_models.json')
         self.model_name = 'CheXpert DenseNet201 v6 + v12 flip TTA ensemble'
         self.checkpoint_paths = [V6, V12]
         self.checkpoint_sha256 = {p.parent.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in self.checkpoint_paths}
-        from chest_xpert.model_selection import selection
-        selected = selection().get('cnn', {})
         if selected.get('architecture') == 'densenet201_v6_v12_tta' and selected.get('sha256') != self.checkpoint_sha256:
             raise RuntimeError('Selected CNN checkpoint hashes changed')
         self.fingerprint = hashlib.sha256(json.dumps(self.checkpoint_sha256, sort_keys=True).encode()).hexdigest()

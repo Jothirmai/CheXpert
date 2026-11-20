@@ -68,8 +68,11 @@ reports/
 !/checkpoints/active_models.json
 !/checkpoints/chexpert_plus_densenet201_v6/
 !/checkpoints/chexpert_plus_impression_320_v12/
+!/checkpoints/report_lora_chexpert_plus_v1/
 /checkpoints/chexpert_plus_densenet201_v6/*
 /checkpoints/chexpert_plus_impression_320_v12/*
+/checkpoints/report_lora_chexpert_plus_v1/*
+!/checkpoints/report_lora_chexpert_plus_v1/adapter_config.json
 /deliverables/
 /frontend/
 /.ipynb_checkpoints/
@@ -91,6 +94,7 @@ reports/
 !/checkpoints/chexpert_plus_impression_320_v12/best_model.pth
 *.pt
 *.safetensors
+!/checkpoints/report_lora_chexpert_plus_v1/adapter_model.safetensors
 *.ckpt
 *.onnx
 *.zip

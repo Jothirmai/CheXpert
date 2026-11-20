@@ -13,7 +13,7 @@ from chest_xpert.modality import modality_validator
 
 
 async def warmup_modality() -> None:
-    """Load the CLIP modality validator eagerly (CPU)."""
+    """Load the CLIP modality validator eagerly on the configured CUDA device."""
 
     def _load() -> None:
         validator = modality_validator
