@@ -66,6 +66,10 @@ reports/
 /data/
 /checkpoints/*
 !/checkpoints/active_models.json
+!/checkpoints/chexpert_plus_densenet201_v6/
+!/checkpoints/chexpert_plus_impression_320_v12/
+/checkpoints/chexpert_plus_densenet201_v6/*
+/checkpoints/chexpert_plus_impression_320_v12/*
 /deliverables/
 /frontend/
 /.ipynb_checkpoints/
@@ -83,6 +87,8 @@ reports/
 *.env.*
 !*.env.example
 *.pth
+!/checkpoints/chexpert_plus_densenet201_v6/best_model.pth
+!/checkpoints/chexpert_plus_impression_320_v12/best_model.pth
 *.pt
 *.safetensors
 *.ckpt
