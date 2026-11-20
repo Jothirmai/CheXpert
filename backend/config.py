@@ -54,7 +54,7 @@ class ModelConfig:
     weights: str = "densenet121-res224-all"
     input_resolution: int = 224
     device: str = field(
-        default_factory=lambda: os.environ.get("CHESTXPERT_DEVICE", "auto")
+        default_factory=lambda: os.environ.get("CHESTXPERT_DEVICE", "cuda:0")
     )
     max_concurrent_jobs: int = field(
         default_factory=lambda: int(os.environ.get("CHESTXPERT_MAX_CONCURRENT_JOBS", "1"))

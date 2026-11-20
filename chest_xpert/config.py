@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from chest_xpert.model_selection import selected_adapter
 
 # ---------------------------------------------------------------------------
 # Project layout
@@ -130,7 +131,7 @@ class ModalityConfig:
     """
     enabled: bool = True
     model_id: str = "openai/clip-vit-base-patch32"
-    device: str = "cpu"  # CLIP run on CPU to avoid contending for the shared GPU
+    device: str = os.environ.get("CHESTXPERT_DEVICE", "cuda:0")
     # Candidate modalities for zero-shot comparison.
     candidate_labels: list[str] = field(default_factory=lambda: [
         "a chest X-ray",
@@ -176,32 +177,19 @@ LLM_CONFIG = LLMConfig()
 # ---------------------------------------------------------------------------
 @dataclass
 class LLMModelConfig:
-    """Configuration for the single LLM used in Stage B (verification + report).
+    """Report-model configuration.
 
-    Free options (all on Hugging Face):
-      * backend="hf_api" — Hugging Face Inference API (rate-limited free tier).
-                           Needs CHESTXPERT_HF_TOKEN and internet access.
-      * backend="transformers_local" — loads model locally via transformers.
-                       Small text-only models (~0.5B–3B) run on CPU.
-                       Larger models need GPU VRAM.
-      * backend="vllm_server" — connect to a self-hosted vLLM server at
-                       CHESTXPERT_LLM_API_URL (run vLLM separately).
-
-    Recommended free models:
-      * Qwen/Qwen3-VL-32B-Instruct    (~16 GB VRAM in 4-bit, sees images) [recommended]
-      * TinyLlama/TinyLlama-1.1B-Chat-v1.0  (~1 GB, text-only, CPU OK)
-      * Qwen/Qwen2.5-0.5B-Instruct         (~1 GB, text-only, CPU OK)
-      * meta-llama/Llama-3.2-1B-Instruct   (~2 GB, text-only)
-      * microsoft/Phi-3-mini-4k-instruct   (~4 GB, text-only)
-
-    Credentials come only from environment variables; never hardcoded.
+    The active report workflow requires transformers_local, a CUDA vision-language
+    model, the original X-ray, a labeled Grad-CAM contact sheet and CNN scores.
+    Text-only models and remote text-generation calls cannot replace missing vision
+    evidence. Credentials are read from environment variables.
     """
     backend: str = field(
         default_factory=lambda: os.environ.get("CHESTXPERT_LLM_BACKEND", "transformers_local")
     )
     model_id: str = field(
         default_factory=lambda: os.environ.get(
-            "CHESTXPERT_LLM_MODEL_ID", "Qwen/Qwen2.5-1.5B-Instruct"
+            "CHESTXPERT_LLM_MODEL_ID", "Qwen/Qwen2.5-VL-7B-Instruct"
         )
     )
     hf_token: str | None = field(
@@ -221,13 +209,52 @@ class LLMModelConfig:
     # Use 4-bit quantization for large VL models (fits on 32 GB V100)
     load_in_4bit: bool = field(
         default_factory=lambda: os.environ.get(
-            "CHESTXPERT_LLM_LOAD_IN_4BIT", "true"
+            "CHESTXPERT_LLM_LOAD_IN_4BIT", "true" if selected_adapter() else "false"
         ).lower()
         == "true"
     )
 
 
 LLM_MODEL_CONFIG = LLMModelConfig()
+
+
+# ---------------------------------------------------------------------------
+# Stage B — LoRA fine-tuning configuration (optional)
+# ---------------------------------------------------------------------------
+@dataclass
+class LoRAConfig:
+    """LoRA (Low-Rank Adaptation) configuration for fine-tuning the Qwen VLM.
+
+    LoRA adds small trainable adapter matrices to the frozen base model, so
+    fine-tuning is fast and memory-efficient while the base weights stay
+    unchanged. At inference time the adapters are merged (or applied on the
+    fly) so output behaviour is preserved for inputs outside the fine-tuning
+    distribution, while task-specific responses are accelerated/improved.
+    """
+    enabled: bool = field(
+        default_factory=lambda: os.environ.get("CHESTXPERT_LORA_ENABLED", "true" if selected_adapter() else "false").lower() == "true"
+    )
+    adapter_path: str | None = field(
+        default_factory=lambda: os.environ.get("CHESTXPERT_LORA_ADAPTER_PATH", selected_adapter())
+    )
+    r: int = field(
+        default_factory=lambda: int(os.environ.get("CHESTXPERT_LORA_R", "16"))
+    )
+    lora_alpha: int = field(
+        default_factory=lambda: int(os.environ.get("CHESTXPERT_LORA_ALPHA", "32"))
+    )
+    lora_dropout: float = field(
+        default_factory=lambda: float(os.environ.get("CHESTXPERT_LORA_DROPOUT", "0.05"))
+    )
+    target_modules: list[str] = field(default_factory=lambda: [
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        "gate_proj", "up_proj", "down_proj",
+    ])
+    bias: str = "none"
+    task_type: str = "CAUSAL_LM"
+
+
+LORA_CONFIG = LoRAConfig()
 
 
 # ---------------------------------------------------------------------------

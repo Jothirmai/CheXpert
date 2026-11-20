@@ -1,0 +1,54 @@
+{
+  "cnn": {
+    "architecture": "densenet201_v6_v12_tta",
+    "status": "selected_experimental",
+    "paths": [
+      "checkpoints/chexpert_plus_densenet201_v6/best_model.pth",
+      "checkpoints/chexpert_plus_impression_320_v12/best_model.pth"
+    ],
+    "sha256": {
+      "chexpert_plus_densenet201_v6": "03fd02eee03c61d8b360a094dc41fd0aca5e292e59a632c24a614724cbd416cc",
+      "chexpert_plus_impression_320_v12": "69ceb8f37b9a0578dac2cb2c08e580ff86dbb5f55e774ab3d128f1ad9b5cc117"
+    },
+    "scoring": "0.5 * sigmoid(v6 at 224px) + 0.25 * sigmoid(v12 at 320px) + 0.25 * sigmoid(v12 horizontal-flip at 320px); mean over study views",
+    "labels": [
+      "Enlarged Cardiomediastinum",
+      "Cardiomegaly",
+      "Lung Opacity",
+      "Lung Lesion",
+      "Edema",
+      "Consolidation",
+      "Pneumonia",
+      "Atelectasis",
+      "Pneumothorax",
+      "Pleural Effusion",
+      "Pleural Other",
+      "Fracture",
+      "Support Devices",
+      "No Finding"
+    ],
+    "selection_basis": "Frozen patient-disjoint CheXpert Plus development five-finding macro AUROC; expert validation checked",
+    "measured_chexpert_test_500_five_finding_macro_auroc": 0.9033857788190994,
+    "measured_chexpert_test_500_result": "reports/chexpert_densenet201_v12_tta_blends_test_exploratory.json",
+    "evaluation_status": "Real measured score on 500 expert-labeled studies; exploratory repeat on already inspected test cohort, not an independent final test or SOTA claim",
+    "limitations": "Five-finding CheXpert AUROC does not transfer as an IU X-Ray AUROC or guarantee report quality."
+  },
+  "report_adapter": {
+    "status": "selected_experimental",
+    "path": "checkpoints/report_lora_chexpert_plus_v1",
+    "base_model": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "adapter_sha256": "629590b09ce573293e5fafb1d6d2dcea3e113a90d2fe155690503878f65526af",
+    "role": "final report draft generation only",
+    "requires_radiologist_review": true,
+    "clinical_validation_passed": false,
+    "validation_metrics": "checkpoints/report_lora_chexpert_plus_v1/standard_validation_metrics.json",
+    "clinical_audit": "checkpoints/report_lora_chexpert_plus_v1/clinical_validation_audit.json",
+    "reserved_test_evaluated": true,
+    "limitations": "Experimental draft model only. Held-out runtime test: 90/96 schema-usable reports, BERTScore F1 0.785; clinical lexical audit found 179/236 reference positive facts missed and 28 claims opposed to reference negatives. Radiologist review required.",
+    "reserved_test_result": "checkpoints/report_lora_chexpert_plus_v1/reserved_test_results_rescored.json",
+    "fp16_followup": "checkpoints/report_lora_chexpert_plus_v1/reserved_test_fp16_followup.json",
+    "runtime_precision_status": "4-bit retained: FP16 improved JSON validity and BERTScore but matched fewer reference positive facts in the lexical audit",
+    "runtime_precision": "4bit",
+    "fp16_followup_status": "complete_exploratory"
+  }
+}

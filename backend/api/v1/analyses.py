@@ -44,13 +44,17 @@ def init_routers(service: InferenceService, job_manager: JobManager) -> None:
 )
 async def create_analysis(
     file: UploadFile = File(...),
+    additional_files: list[UploadFile] | None = File(None),
+    template_id: str = Form("standard"),
+    clinical_indication: Optional[str] = Form(None),
+    comparison_study: Optional[str] = Form(None),
     patient_id: Optional[str] = Form(None),
     exam_date: Optional[str] = Form(None),
     modality: Optional[str] = Form("Chest X-ray"),
     view: Optional[str] = Form(None),
     institution: Optional[str] = Form(None),
     referring_physician: Optional[str] = Form(None),
-    generate_grad_cam: bool = Form(False),
+    generate_grad_cam: bool = Form(True),
     api_key: str | None = Security(get_api_key),
 ) -> AnalysisResponse:
     """Upload a chest X-ray and queue it for analysis.
@@ -62,6 +66,12 @@ async def create_analysis(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Backend services not initialized.",
         )
+
+    from backend.services import review_store
+    try:
+        review_store.template(template_id)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(400, "Selected template does not exist")
 
     # Validate extension client-side hint + server-side check.
     filename = file.filename or "upload"
@@ -82,13 +92,38 @@ async def create_analysis(
             detail=f"File too large ({size_mb:.1f} MB > {STORAGE_CONFIG.max_upload_mb} MB)",
         )
 
+    additional_files = additional_files or []
+    if len(additional_files) > 4:
+        raise HTTPException(400, "Upload at most five original images from the same study")
+    extras=[]
+    total_size=len(contents)
+    for extra in additional_files:
+        suffix=Path(extra.filename or "").suffix.lower()
+        if suffix not in allowed:
+            raise HTTPException(400, "Unsupported file type in additional study image")
+        body=await extra.read(STORAGE_CONFIG.max_upload_mb*1024*1024+1)
+        total_size+=len(body)
+        if total_size>STORAGE_CONFIG.max_upload_mb*1024*1024:
+            raise HTTPException(413, "Combined study images exceed the upload size limit")
+        extras.append((suffix,body))
+
     analysis_id = str(uuid.uuid4())
     # Save to a temp path with a safe, unpredictable name.
     safe_name = f"{analysis_id}{ext}"
     tmp_path = STORAGE_CONFIG.temp_dir / safe_name
     tmp_path.write_bytes(contents)
 
+    additional_paths=[]
+    for index,(suffix,body) in enumerate(extras,start=2):
+        extra_path=STORAGE_CONFIG.temp_dir/f"{analysis_id}_view_{index}{suffix}"
+        extra_path.write_bytes(body)
+        additional_paths.append(str(extra_path))
+
     request_data = {
+        "additional_image_paths": additional_paths,
+        "template_id": template_id,
+        "clinical_indication": clinical_indication,
+        "comparison_study": comparison_study,
         "patient_id": patient_id,
         "exam_date": exam_date,
         "modality": modality,
@@ -253,6 +288,7 @@ def get_analysis(analysis_id: str, api_key: str | None = Security(get_api_key)) 
         labels=[
             LabelScore(
                 label=l["label"],
+                score=l.get("score"),
                 severity=l["severity"],
                 supported=l["supported"],
             )
@@ -275,4 +311,5 @@ def get_analysis(analysis_id: str, api_key: str | None = Security(get_api_key)) 
             if result.get("grad_cam_available") else None
         ),
         disclaimer=disclaimer,
+        v7_report=result.get("v7_report"),
     )

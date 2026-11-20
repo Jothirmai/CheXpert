@@ -27,7 +27,7 @@ def health() -> HealthResponse:
 
 @router.get("/ready", response_model=ReadinessResponse)
 def ready() -> ReadinessResponse:
-    checks: dict[str, str] = {}
+    checks: dict[str, str] = {"report_inputs": "required: cnn_scores, original_xray, gradcam_contact_sheet"}
     all_ok = True
 
     # Model loadable?
@@ -35,6 +35,19 @@ def ready() -> ReadinessResponse:
         checks["model"] = "loaded"
     else:
         checks["model"] = "not loaded (will load on first request)"
+        all_ok = False
+
+    from chest_xpert.modality import modality_validator
+    if modality_validator._clip_model is not None:
+        checks["clip"] = "loaded"
+    else:
+        checks["clip"] = modality_validator._clip_error or "not loaded"
+        all_ok = False
+    vision = inference_service._verification_engine
+    if vision is not None and vision.client.backend == "transformers_local" and vision.client.is_configured():
+        checks["vision"] = vision.client.model_id
+    else:
+        checks["vision"] = "not available"
         all_ok = False
 
     # Temp dir writable?

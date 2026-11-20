@@ -61,3 +61,32 @@ build/
 # Temp
 /temp/
 reports/
+
+# Local datasets, trained models, generated output, and notebook state
+/data/
+/checkpoints/*
+!/checkpoints/active_models.json
+/deliverables/
+/frontend/
+/.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+*.ipynb
+*.log
+
+# Frontend build and dependencies
+**/node_modules/
+/frontend-react/dist/
+/frontend-react/.vite/
+
+# Local credentials and downloaded artifacts
+*.env
+*.env.*
+!*.env.example
+*.pth
+*.pt
+*.safetensors
+*.ckpt
+*.onnx
+*.zip
+*.mp4
+*.webm

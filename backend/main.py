@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api.v1 import admin, analyses, health, report
+from backend.api.v1 import admin, analyses, health, report, workflow
 from backend.config import SERVER_CONFIG, STORAGE_CONFIG, ensure_dirs
 from backend.security.auth import get_api_key
 from backend.services.cleanup_service import cleanup_service
@@ -42,6 +42,10 @@ async def lifespan(app: FastAPI):
     if not ok:
         # Don't crash — the first request will retry. Log the error.
         print(f"[startup] Model preload deferred: {err}")
+    if ok:
+        from chest_xpert.verification import VerificationEngine
+        import asyncio
+        inference_service._verification_engine = await asyncio.to_thread(VerificationEngine)
     yield
     # Shutdown: release GPU resources.
     try:
@@ -57,7 +61,7 @@ app = FastAPI(
     title="Chest Xpert API",
     description=(
         "Chest X-ray multi-label findings inference using pre-trained models. "
-        "No training, no fine-tuning. AI-generated research draft — not a clinical diagnosis."
+        "Trained CNN and Qwen vision evidence fusion. Drafts require radiologist review."
     ),
     version="1.0.0",
     lifespan=lifespan,
@@ -68,11 +72,12 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=SERVER_CONFIG.cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*", "X-API-Key"],
 )
 
 # Routes.
+app.include_router(workflow.router, prefix="/api/v1")
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(analyses.router, prefix="/api/v1/analyses")
 app.include_router(report.router, prefix="/api/v1/report")

@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Security, status
 from fastapi.responses import FileResponse
 
 from backend.security.auth import get_api_key
+from chest_xpert.report_quality import ClinicalContentError
 from backend.services.inference_service import inference_service
 from backend.schemas import ReportExportRequest, ReportResponse
 
@@ -29,25 +30,14 @@ def get_report(
             detail="Backend services not initialized.",
         )
 
-    job = inference_service.get_job(analysis_id)
-    if job is None or job.result is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Analysis {analysis_id} not found or not completed.",
-        )
-
-    if job.status != "completed":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Analysis {analysis_id} is {job.status}; report not ready.",
-        )
-
     try:
         fmt, file_path = inference_service.generate_report_export(
             analysis_id=analysis_id,
             fmt=format,
         )
-    except FileNotFoundError as exc:
+    except ClinicalContentError as exc:
+        raise HTTPException(422, str(exc))
+    except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
@@ -80,13 +70,17 @@ def download_report(
     from backend.config import STORAGE_CONFIG
 
     file_path = STORAGE_CONFIG.reports_dir / f"{analysis_id}.{format}"
-    if not file_path.exists():
+    if format not in {"pdf", "html"}:
+        raise HTTPException(400, "Unsupported report format")
+    if True:
         # Try generating on demand.
         try:
             _, file_path = inference_service.generate_report_export(
                 analysis_id=analysis_id, fmt=format
             )
-        except FileNotFoundError:
+        except ClinicalContentError as exc:
+            raise HTTPException(422, str(exc))
+        except (FileNotFoundError, ValueError):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Report not found for {analysis_id}.",

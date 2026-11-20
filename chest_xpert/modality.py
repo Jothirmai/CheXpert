@@ -120,6 +120,8 @@ class ModalityValidator:
                 token=hf_token,
             )
             self._qwen_model.eval()
+            qwen_device = next(self._qwen_model.parameters()).device
+            print(f"[Chest Xpert] Qwen modality model loaded on device: {qwen_device}")
         except Exception as exc:  # noqa: BLE001
             self._qwen_error = f"Failed to load Qwen modality model: {exc}"
             self._qwen_model = None
@@ -134,7 +136,12 @@ class ModalityValidator:
 
         model_id = "Qwen/Qwen2.5-VL-7B-Instruct"
         try:
-            image = Image.open(image_path).convert("RGB")
+            if Path(image_path).suffix.lower() in {".dcm", ".dicom"}:
+                from chest_xpert.preprocessing import load_image
+                arr = load_image(image_path)
+                image = Image.fromarray(np.uint8(np.clip((arr + 1024) / 2048, 0, 1) * 255)).convert("RGB")
+            else:
+                image = Image.open(image_path).convert("RGB")
         except Exception as exc:  # noqa: BLE001
             return ModalityResult(
                 decision=ModalityDecision.TECHNICAL_FAILURE,
@@ -267,9 +274,24 @@ class ModalityValidator:
             from transformers import CLIPModel, CLIPProcessor
             import torch
 
+            if self.config.device == "auto":
+                self.config.device = "cuda:0"
+            if not self.config.device.startswith("cuda"):
+                raise RuntimeError("CLIP inference requires a CUDA device")
             model_id = self.config.model_id
             self._clip_processor = CLIPProcessor.from_pretrained(model_id)
-            self._clip_model = CLIPModel.from_pretrained(model_id)
+            from huggingface_hub.constants import HF_HUB_CACHE
+            cached = Path(HF_HUB_CACHE) / ("models--" + model_id.replace("/", "--"))
+            safe_weights = list(cached.glob("snapshots/*/model.safetensors"))
+            if safe_weights:
+                from transformers import CLIPConfig
+                from safetensors.torch import load_file
+                self._clip_model = CLIPModel(CLIPConfig.from_pretrained(model_id))
+                state = load_file(str(safe_weights[0]))
+                state = {key: value for key, value in state.items() if not key.endswith(".position_ids")}
+                self._clip_model.load_state_dict(state, strict=True)
+            else:
+                self._clip_model = CLIPModel.from_pretrained(model_id, use_safetensors=True)
             self._clip_model.to(self.config.device)
             self._clip_model.eval()
         except Exception as exc:  # noqa: BLE001
@@ -285,7 +307,12 @@ class ModalityValidator:
 
         model_id = self.config.model_id
         try:
-            image = Image.open(image_path).convert("RGB")
+            if Path(image_path).suffix.lower() in {".dcm", ".dicom"}:
+                from chest_xpert.preprocessing import load_image
+                arr = load_image(image_path)
+                image = Image.fromarray(np.uint8(np.clip((arr + 1024) / 2048, 0, 1) * 255)).convert("RGB")
+            else:
+                image = Image.open(image_path).convert("RGB")
         except Exception as exc:  # noqa: BLE001
             return ModalityResult(
                 decision=ModalityDecision.TECHNICAL_FAILURE,
@@ -390,7 +417,12 @@ class ModalityValidator:
 
         model_id = self.config.model_id
         try:
-            image = Image.open(image_path).convert("RGB")
+            if Path(image_path).suffix.lower() in {".dcm", ".dicom"}:
+                from chest_xpert.preprocessing import load_image
+                arr = load_image(image_path)
+                image = Image.fromarray(np.uint8(np.clip((arr + 1024) / 2048, 0, 1) * 255)).convert("RGB")
+            else:
+                image = Image.open(image_path).convert("RGB")
         except Exception as exc:  # noqa: BLE001
             return ModalityResult(
                 decision=ModalityDecision.TECHNICAL_FAILURE,
@@ -451,45 +483,10 @@ class ModalityValidator:
     # ------------------------------------------------------------------
 
     def validate(self, image_path: str | Path) -> ModalityResult:
-        """Run modality validation on an image file.
-
-        Priority:
-          1. Qwen VLM (if token configured) — can actually see the image.
-          2. CLIP zero-shot — text-image similarity fallback.
-          3. Grayscale heuristic — last resort.
-
-        Technical failures are distinguished from genuine rejections.
-        """
+        """CLIP is the sole modality gate; unavailable/uncertain never passes."""
         import time
+        return self._clip_validate(image_path, time.perf_counter())
 
-        model_id = self.config.model_id
-        t0 = time.perf_counter()
 
-        if not self.config.enabled:
-            return ModalityResult(
-                decision=ModalityDecision.TECHNICAL_FAILURE,
-                reason="Modality validation is disabled.",
-                model_id=model_id,
-                technical_error="disabled",
-                method="none",
-                latency_ms=(time.perf_counter() - t0) * 1000.0,
-            )
-
-        # 1. Try Qwen VLM first (best at actually seeing the image).
-        import os
-
-        if os.environ.get("CHESTXPERT_HF_TOKEN"):
-            result = self._qwen_validate(image_path, t0)
-            if not result.is_technical_failure:
-                return result
-            # Qwen failed technically; fall through to CLIP.
-
-        # 2. Try CLIP zero-shot.
-        if self._ensure_clip_loaded():
-            result = self._clip_validate(image_path, t0)
-            if not result.is_technical_failure:
-                return result
-            # CLIP failed technically; fall through to heuristic.
-
-        # 3. Heuristic fallback.
-        return self._heuristic_validate(image_path, t0)
+# Share the loaded CLIP model between startup and requests.
+modality_validator = ModalityValidator()

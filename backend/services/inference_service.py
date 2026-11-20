@@ -86,38 +86,35 @@ class InferenceService:
 
         Falls back to CPU if CUDA is out of memory (common on the shared V100).
         """
-        if self._model_loaded or self._model_load_error is not None:
-            return self._model_loaded, self._model_load_error
+        if self._model_loaded:
+            return True, None
 
         async with self._lock:
-            if self._model_loaded or self._model_load_error is not None:
-                return self._model_loaded, self._model_load_error
+            if self._model_loaded:
+                return True, None
 
             try:
                 from chest_xpert.config import DEVICE_CONFIG, MODEL_CONFIG as CX_MODEL_CONFIG
-                from chest_xpert.inference import InferenceEngine
+                from chest_xpert.model_selection import selection
+                if selection().get('cnn', {}).get('architecture') == 'densenet201_v6_v12_tta':
+                    from chest_xpert.selected_ensemble import SelectedEnsembleEngine as InferenceEngine
+                else:
+                    from chest_xpert.checkpoint_engine import CheckpointEngine as InferenceEngine
 
-                device = DEVICE_CONFIG.resolve() if MODEL_CONFIG.device == "auto" else MODEL_CONFIG.device
+                device = MODEL_CONFIG.device if MODEL_CONFIG.device != "auto" else "cuda:0"
 
                 def _load(dev: str) -> InferenceEngine:
-                    engine = InferenceEngine(model_name=CX_MODEL_CONFIG.name, device=dev)
+                    if InferenceEngine.__name__ == 'SelectedEnsembleEngine':
+                        engine = InferenceEngine(device=dev)
+                    else:
+                        engine = InferenceEngine(model_name=CX_MODEL_CONFIG.name, device=dev)
                     _ = engine.model  # force load
                     return engine
 
                 t0 = time.perf_counter()
                 before = MONITOR.snapshot("before_load")
 
-                try:
-                    engine = _load(device)
-                except RuntimeError as exc:
-                    if "out of memory" in str(exc).lower() and device != "cpu":
-                        # Fall back to CPU.
-                        import torch as _torch
-                        _torch.cuda.empty_cache()
-                        device = "cpu"
-                        engine = _load("cpu")
-                    else:
-                        raise
+                engine = await asyncio.to_thread(_load, device)
 
                 load_ms = (time.perf_counter() - t0) * 1000.0
                 after = MONITOR.snapshot("after_load")
@@ -125,6 +122,7 @@ class InferenceService:
                 self._engine = engine
                 self._engine_device = device
                 self._model_loaded = True
+                self._model_load_error = None
                 self._load_snapshot = {
                     "before": before,
                     "after": after,
@@ -195,7 +193,11 @@ class InferenceService:
                     generate_grad_cam,
                 )
                 job.result = result
-                job.status = JobStatus.COMPLETED
+                if result.get("status") == "rejected":
+                    job.status = JobStatus.FAILED
+                    job.error = result["reason"]
+                else:
+                    job.status = JobStatus.COMPLETED
                 job.completed_at = time.time()
             except Exception as exc:  # noqa: BLE001
                 job.status = JobStatus.FAILED
@@ -206,7 +208,6 @@ class InferenceService:
                     MONITOR.cleanup()
                 except Exception:  # noqa: BLE001
                     pass
-                raise
 
     # ------------------------------------------------------------------
     # Synchronous pipeline (runs in a worker thread)
@@ -227,59 +228,72 @@ class InferenceService:
             MODEL_CONFIG as CX_MODEL_CONFIG,
         )
         from chest_xpert.label_mapping import map_outputs_to_labels, scores_dict
-        from chest_xpert.modality import ModalityValidator
+        from chest_xpert.modality import modality_validator
         from chest_xpert.preprocessing import validate_image, preprocess
 
         path = Path(image_path)
+        view_paths = [path] + [Path(p) for p in request_data.get("additional_image_paths", [])]
+        if len(view_paths) > 5 or len({p.resolve() for p in view_paths}) != len(view_paths):
+            raise ValueError("Provide one to five distinct original images from the same study")
 
-        # ---------- Stage 0: file validation ----------
-        validation = validate_image(path)
-        if not validation.ok:
-            return {
-                "analysis_id": analysis_id,
-                "status": "rejected",
-                "reason": validation.reason,
-                "modality": {
-                    "decision": "technical_failure",
-                    "reason": validation.reason,
-                    "model": None,
-                    "latency_ms": None,
-                },
-                "labels": [],
-                "disclaimer": DISCLAIMER,
-            }
+        # Ensure consistent CUDA device across all operations (multi-GPU safety).
+        import torch as _torch
+        if _torch.cuda.is_available():
+            _torch.cuda.set_device(torch.device(self._engine_device or "cuda:0"))
 
-        # ---------- Stage 0: modality validation ----------
-        modality_decision = "accepted"
-        modality_reason = "File validation passed; modality check skipped."
-        modality_model = None
-        modality_ms = None
-        modality_accepted = True
-
-        if MODALITY_CONFIG.enabled:
-            validator = ModalityValidator()
-            t0 = time.perf_counter()
-            mod_result = validator.validate(path)
-            modality_ms = (time.perf_counter() - t0) * 1000.0
-            modality_decision = mod_result.decision.value
-            modality_reason = mod_result.reason
-            modality_model = mod_result.model_id
-            modality_accepted = mod_result.is_accepted
-
-            if mod_result.is_rejected or mod_result.is_uncertain:
+        modality_total_ms = 0.0
+        for view_path in view_paths:
+            # ---------- Stage 0: file validation ----------
+            validation = validate_image(view_path)
+            if not validation.ok:
                 return {
                     "analysis_id": analysis_id,
                     "status": "rejected",
-                    "reason": f"Modality {modality_decision}: {modality_reason}",
+                    "reason": validation.reason,
                     "modality": {
-                        "decision": modality_decision,
-                        "reason": modality_reason,
-                        "model": modality_model,
-                        "latency_ms": round(modality_ms, 2),
+                        "decision": "technical_failure",
+                        "reason": validation.reason,
+                        "model": None,
+                        "latency_ms": None,
                     },
                     "labels": [],
                     "disclaimer": DISCLAIMER,
                 }
+
+            # ---------- Stage 0: modality validation ----------
+            modality_decision = "accepted"
+            modality_reason = "File validation passed; modality check skipped."
+            modality_model = None
+            modality_ms = None
+            modality_accepted = True
+
+            if MODALITY_CONFIG.enabled:
+                validator = modality_validator
+                t0 = time.perf_counter()
+                mod_result = validator.validate(view_path)
+                modality_ms = (time.perf_counter() - t0) * 1000.0
+                modality_total_ms += modality_ms
+                modality_decision = mod_result.decision.value
+                modality_reason = mod_result.reason
+                modality_model = mod_result.model_id
+                modality_accepted = mod_result.is_accepted
+
+                if not mod_result.is_accepted:
+                    return {
+                        "analysis_id": analysis_id,
+                        "status": "rejected",
+                        "reason": ("The uploaded image is not a chest X-ray. Please upload a valid chest X-ray." if mod_result.is_rejected else f"Chest X-ray validation could not confirm this image: {modality_reason}"),
+                        "modality": {
+                            "decision": modality_decision,
+                            "reason": modality_reason,
+                            "model": modality_model,
+                            "latency_ms": round(modality_ms, 2),
+                        },
+                        "labels": [],
+                        "disclaimer": DISCLAIMER,
+                    }
+
+        modality_ms = modality_total_ms
 
         # ---------- Stage A: classifier inference ----------
         # Model is already loaded by run_analysis before entering this thread.
@@ -290,69 +304,90 @@ class InferenceService:
         device = self._engine_device or "cpu"
 
         t0 = time.perf_counter()
-        pp = preprocess(path, device, resolution=CX_MODEL_CONFIG.input_resolution)
-        result = engine.predict(pp.tensor)
+        from chest_xpert.checkpoint_engine import prepare_checkpoint_image
+        from types import SimpleNamespace
+        selected_ensemble = hasattr(engine, 'predict_pair')
+        if selected_ensemble:
+            prepared_views = [SimpleNamespace(pair=engine.prepare(p)) for p in view_paths]
+            predictions = [engine.predict_pair(prepared.pair) for prepared in prepared_views]
+        else:
+            prepared_views = [SimpleNamespace(tensor=prepare_checkpoint_image(p,engine.resolution,engine.pixel_scale,engine.crop).unsqueeze(0).to(device)) for p in view_paths]
+            predictions = [engine.predict(prepared.tensor) for prepared in prepared_views]
+        per_view_scores = [prediction.raw.copy() for prediction in predictions]
+        pp = prepared_views[0]
+        result = predictions[0]
+        result.raw = {label: sum(scores[label] for scores in per_view_scores)/len(per_view_scores) for label in result.raw}
+        result.inference_only_ms = sum(prediction.inference_only_ms for prediction in predictions)
         inference_ms = (time.perf_counter() - t0) * 1000.0
 
-        mappings = map_outputs_to_labels(result.raw, result.model_name)
+        from chest_xpert.label_mapping import LabelMapping
+        from chest_xpert.report_quality import evidence_warnings, validate_clinical_sections, report_warnings, report_context_warnings
+        quality_warnings = evidence_warnings(result.raw)
+        mappings = [LabelMapping(label, True, label, score) for label, score in result.raw.items()]
         label_list = []
         for m in mappings:
-            sev = self._severity(m.score)
+            sev = "not assessed"
             label_list.append(
                 {
                     "label": m.requested_label,
                     "supported": m.supported,
+                    "score": m.score,
                     "severity": sev,
                 }
             )
 
-        # ---------- Grad-CAM for ALL supported findings + contact sheet ----------
+        generate_grad_cam = True
+        # ---------- Grad-CAM for top findings + contact sheet ----------
         grad_cam_path = None
         grad_cam_ms = None
         cam_results: list = []
         supported = []
-        if generate_grad_cam:
-            supported = [m for m in mappings if m.supported]
-            if supported:
-                t0 = time.perf_counter()
-                import numpy as np
+        # A contact sheet is required evidence even if a legacy caller disables display.
+        supported = sorted(
+            [m for m in mappings if m.supported and m.score is not None],
+            key=lambda m: m.score or 0,
+            reverse=True,
+        )[:6]  # Top 6 findings only — reduces latency
+        if supported:
+            t0 = time.perf_counter()
+            import numpy as np
 
-                from chest_xpert.explainability import (
-                    GradCAM,
-                    generate_contact_sheet,
-                    save_contact_sheet,
-                )
+            from chest_xpert.explainability import (
+                GradCAM,
+                generate_contact_sheet,
+                save_contact_sheet,
+            )
 
-                cam = GradCAM(engine.model, target_layer_name="features.norm5")
-                disp = pp.tensor.detach().cpu().numpy()[0, 0]
-                disp = np.clip((disp + 1024) / 2048, 0, 1)
-
-                for m in supported:
-                    grad = cam.generate(
-                        input_tensor=pp.tensor,
-                        target_label=m.model_output,
-                        model_outputs=result.model_outputs,
-                        original_image=disp,
-                    )
-                    cam_results.append(grad)
+            sheet_name = f"{analysis_id}_gradcam_contact_sheet.png"
+            sheet_path = STORAGE_CONFIG.temp_dir / sheet_name
+            if selected_ensemble:
+                engine.contact_sheet([prepared.pair for prepared in prepared_views],result.raw,sheet_path)
+            else:
+                cam = GradCAM(engine.model, target_layer_name="encoder")
+                from dataclasses import replace
+                displays=[]
+                for view_index,prepared in enumerate(prepared_views):
+                    disp = prepared.tensor.detach().cpu().numpy()[0, 0]
+                    disp = np.clip((disp / engine.pixel_scale + 1) / 2, 0, 1)
+                    displays.append(disp)
+                    for m in supported:
+                        grad = cam.generate(input_tensor=prepared.tensor,target_label=m.model_output,model_outputs=result.model_outputs,original_image=disp)
+                        if len(prepared_views)>1:
+                            grad=replace(grad,target_label=f"View {view_index+1}: {grad.target_label}")
+                        cam_results.append(grad)
                 cam.close()
-
-                grad_cam_ms = (time.perf_counter() - t0) * 1000.0
-
-                # Build contact sheet (6 cols x 3 rows = 18 cells).
-                sheet = generate_contact_sheet(
-                    cam_results,
-                    original_image=disp,
-                    cols=6,
-                    rows=3,
-                    cell_size=224,
-                )
-                sheet_name = f"{analysis_id}_gradcam_contact_sheet.png"
-                sheet_path = STORAGE_CONFIG.temp_dir / sheet_name
+                sheet = generate_contact_sheet(cam_results, original_image=displays[0],
+                    cols=6 if len(prepared_views)>1 else 3,
+                    rows=len(prepared_views) if len(prepared_views)>1 else 2, cell_size=224)
                 save_contact_sheet(sheet, str(sheet_path))
-                grad_cam_path = str(sheet_path)
+            grad_cam_ms = (time.perf_counter() - t0) * 1000.0
+            grad_cam_path = str(sheet_path)
 
-        # ---------- Stage B: Qwen report generation (required) ----------
+
+        if not grad_cam_path or not Path(grad_cam_path).is_file():
+            raise RuntimeError("A Grad-CAM contact sheet is required before VLM report generation.")
+
+        # ---------- Stage B: Qwen V7 report generation ----------
         verification_info = {
             "available": False,
             "model": None,
@@ -361,43 +396,92 @@ class InferenceService:
             "agreement": None,
         }
         report_findings = None
+        v7_report_text = None
 
         from chest_xpert.verification import VerificationEngine
 
-        ve = VerificationEngine()
+        from PIL import Image
+        converted_paths=[]
+        for i,source_path in enumerate(view_paths):
+            suffix="original" if i==0 else f"original_view_{i+1}"
+            converted = STORAGE_CONFIG.temp_dir / f"{analysis_id}_{suffix}.png"
+            if source_path.suffix.lower() in {".dcm", ".dicom"}:
+                from chest_xpert.preprocessing import load_image
+                import numpy as np
+                arr = load_image(source_path)
+                Image.fromarray(np.uint8(np.clip((arr + 1024) / 2048, 0, 1) * 255)).save(converted)
+            else:
+                with Image.open(source_path) as image:
+                    image.convert("RGB").save(converted)
+            converted_paths.append(str(converted))
+        image_path = converted_paths[0] if len(converted_paths)==1 else converted_paths
+        ve = self._verification_engine or VerificationEngine()
+        self._verification_engine = ve
+        if ve.client.backend != "transformers_local":
+            raise RuntimeError("This workflow requires the local CUDA vision backend so both images are supplied. Set CHESTXPERT_LLM_BACKEND=transformers_local.")
         model_doc = (
-            "torchxrayvision DenseNet-121 (densenet121-res224-all), "
-            "pre-trained weights by other researchers. Scores are raw model "
-            "outputs, not calibrated probabilities."
+            "Selected DenseNet201 ensemble with 14 finding outputs. "
+            "Scores are uncalibrated CNN outputs, not calibrated probabilities."
         )
+
+        if engine.crop == "center":
+            model_doc += " Grad-CAM uses the centered square CNN crop; the original vision image is uncropped. Do not infer heatmap localization outside the crop."
+
+        patient_info = {
+            "patient_id": request_data.get("patient_id") or "NOT PROVIDED",
+            "original_image_count": len(view_paths),
+            "study": request_data.get("modality", "Chest X-ray"),
+            "report_sections": __import__("backend.services.review_store", fromlist=["template"]).template(request_data.get("template_id", "standard"))["sections"],
+            "view": request_data.get("view") or "NOT PROVIDED",
+            "technique": ("Chest radiograph, " + request_data["view"] + " projection.") if request_data.get("view") else "NOT PROVIDED",
+            "patient_age": "NOT PROVIDED",
+            "patient_sex": "NOT PROVIDED",
+            "clinical_indication": request_data.get("clinical_indication") or "NOT PROVIDED",
+            "comparison_study": request_data.get("comparison_study") or "NOT PROVIDED",
+        }
+
+        from backend.services import review_store
+        template = review_store.template(request_data.get("template_id", "standard"))
+        model_doc += " " + " ".join(quality_warnings)
+        model_doc += " Return ONLY a JSON object with key sections: a list of objects with heading and text. Use exactly these section headings in order: " + __import__("json").dumps(template["sections"]) + ". Assess the original image; scores are uncalibrated supporting signals, never disease probability or severity. Do not invent unavailable patient details."
         t0 = time.perf_counter()
-        vr = ve.verify(
+        vr = ve.generate_v7_report(
             mappings=mappings,
             model_doc=model_doc,
+            patient_info=patient_info,
             image_path=image_path,
             contact_sheet_path=grad_cam_path,
+            self_correct=False,
         )
         verification_ms = (time.perf_counter() - t0) * 1000.0
         verification_info["available"] = vr.available
         verification_info["model"] = vr.model_id or None
         verification_info["latency_ms"] = round(vr.latency_ms, 2)
         verification_info["error"] = vr.error
-        n_cons = sum(1 for it in vr.items if it.assessment == "consistent")
-        n_incon = sum(1 for it in vr.items if it.assessment == "inconsistent")
-        n_unc = sum(1 for it in vr.items if it.assessment == "uncertain")
-        verification_info["agreement"] = (
-            f"{n_cons} consistent · {n_incon} inconsistent · {n_unc} uncertain"
-        )
-        if vr.report_findings:
-            report_findings = [
-                {
-                    "pathology": f.pathology,
-                    "status": f.status,
-                    "evidence_basis": f.evidence_basis,
-                    "recommended_wording": f.recommended_wording,
-                }
-                for f in vr.report_findings
-            ]
+        v7_report_text = vr.v7_report
+        if not vr.available or not v7_report_text:
+            raise RuntimeError(vr.error or "Vision model did not produce a report.")
+
+        import json, re
+        match = re.search(r"\{.*\}", v7_report_text, re.S)
+        if not match:
+            raise RuntimeError("Vision model did not return a structured report; please retry.")
+        from chest_xpert.report_quality import parse_generated_sections
+        sections, schema_normalized = parse_generated_sections(v7_report_text, template["sections"])
+        if schema_normalized:
+            quality_warnings.append("Generated JSON layout was normalized; clinical text was preserved for review.")
+        # Metadata sections must come from supplied metadata, never model guesses.
+        for section in sections:
+            key = section["heading"].strip().lower()
+            if key in {"clinical indication", "clinical history", "indication", "history"}:
+                section["text"] = request_data.get("clinical_indication") or "NOT PROVIDED"
+            elif key in {"comparison", "comparison study"}:
+                section["text"] = request_data.get("comparison_study") or "NOT PROVIDED"
+            elif key in {"technique", "exam technique"}:
+                section["text"] = patient_info["technique"]
+        quality_warnings.extend(report_warnings(sections))
+        quality_warnings.extend(report_context_warnings(sections, request_data.get("comparison_study")))
+        review_store.write(analysis_id, {"analysis_id": analysis_id, "created_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(), "patient_id": request_data.get("patient_id"), "sections": sections, "template": template, "signature": None, "revision": 1, "labels": label_list, "quality_warnings": quality_warnings, "model_provenance": {"cnn": engine.model_name, "cnn_fingerprint": engine.fingerprint, "vision_model": ve.client.model_id, "evidence_mode": "cnn_evidence", "vision_inputs": getattr(ve.client, "_last_vision_inputs", None), "cnn_scores": result.raw, "cnn_scores_by_view": per_view_scores, "score_aggregation": "mean across supplied views", "adapter_name": Path(ve.client.lora_adapter_path).name if ve.client.lora_adapter_path else None}})
 
         # ---------- Stage C/D: report data ----------
         from chest_xpert.report import ExamDetails, ReportData, generate_html, generate_pdf
@@ -437,11 +521,12 @@ class InferenceService:
         rd.reviewer_name = request_data.get("reviewer_name")
         rd.review_status = request_data.get("review_status", "Pending")
         rd.notes = request_data.get("notes", "")
+        rd.v7_report = v7_report_text
 
         total_ms = inference_ms + (modality_ms or 0) + (grad_cam_ms or 0) + verification_ms
 
-        # Persist HTML report.
-        html = generate_html(rd)
+        # Persist the same structured report used by review and export.
+        html = review_store.render(review_store.read(analysis_id))
         report_path = STORAGE_CONFIG.reports_dir / f"{analysis_id}.html"
         report_path.write_text(html, encoding="utf-8")
 
@@ -464,28 +549,15 @@ class InferenceService:
             "verification": verification_info,
             "report_findings": report_findings,
             "report_html_path": str(report_path),
+            "v7_report": v7_report_text,
             "disclaimer": DISCLAIMER,
         }
 
     @staticmethod
     def _severity(score) -> str:
-        if score is None:
-            return "not assessed"
-        try:
-            score = float(score)
-        except (TypeError, ValueError):
-            return "not assessed"
-        if score >= 0.7:
-            return "high"
-        if score >= 0.5:
-            return "moderate"
-        if score >= 0.3:
-            return "low"
-        return "minimal"
+        return "not assessed"
 
-    # ------------------------------------------------------------------
-    # Report export
-    # ------------------------------------------------------------------
+
     def generate_report_export(
         self,
         analysis_id: str,
@@ -495,37 +567,17 @@ class InferenceService:
         review_status: Optional[str] = None,
         notes: Optional[str] = None,
     ) -> tuple[str, str]:  # (format, file_path)
-        from chest_xpert.report import ReportData, generate_html, generate_pdf
-
-        job = self.get_job(analysis_id)
-        if job is None or job.result is None:
-            raise FileNotFoundError(f"Analysis {analysis_id} not found or not completed.")
-
-        html_path = STORAGE_CONFIG.reports_dir / f"{analysis_id}.html"
-        if not html_path.exists():
-            raise FileNotFoundError(f"Report HTML not found for {analysis_id}.")
-
-        # Rebuild ReportData from stored result (minimal fields for export).
-        rd = ReportData()
-        rd.model_name = MODEL_CONFIG.model_name
-        rd.model_version = "pre-trained weights (torchxrayvision)"
-        rd.device = job.result.get("modality", {}).get("model", "cpu") or "cpu"
-        rd.latency_ms = job.result.get("inference_latency_ms", 0)
-        rd.modality_decision = job.result.get("modality", {}).get("decision")
-        rd.modality_reason = job.result.get("modality", {}).get("reason")
-        rd.modality_model = job.result.get("modality", {}).get("model")
-        rd.modality_ms = job.result.get("modality", {}).get("latency_ms")
-        rd.impression = impression or ""
-        rd.reviewer_name = reviewer_name
-        rd.review_status = review_status or "Pending"
-        rd.notes = notes or ""
-
+        from backend.services import review_store
+        if fmt not in {"pdf", "html"}:
+            raise ValueError("Supported report formats are PDF and HTML.")
+        data = review_store.read(analysis_id)
+        html = review_store.render(data)
         out_path = STORAGE_CONFIG.reports_dir / f"{analysis_id}.{fmt}"
         if fmt == "pdf":
-            generate_pdf(rd, out_path)
+            from weasyprint import HTML
+            HTML(string=html).write_pdf(str(out_path))
         else:
-            out_path.write_text(html_path.read_text(encoding="utf-8"), encoding="utf-8")
-
+            out_path.write_text(html, encoding="utf-8")
         return fmt, str(out_path)
 
 

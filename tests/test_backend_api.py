@@ -91,3 +91,25 @@ def test_cache_sizes_endpoint():
     assert res.status_code == 200
     data = res.json()
     assert "torchxrayvision_model_weights_mb" in data
+
+
+def test_upload_retains_all_supplied_study_images(tmp_path,monkeypatch):
+    import io,time
+    from types import SimpleNamespace
+    from PIL import Image
+    from backend.api.v1 import analyses
+    from backend.config import STORAGE_CONFIG
+    from backend.services.inference_service import JobStatus
+    monkeypatch.setattr(STORAGE_CONFIG,'temp_dir',tmp_path)
+    seen={}
+    def create(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(status=JobStatus.QUEUED,created_at=time.time())
+    monkeypatch.setattr(analyses,'_job_manager',SimpleNamespace(create=create))
+    def data(value):
+        stream=io.BytesIO();Image.new('L',(32,32),value).save(stream,format='PNG');return stream.getvalue()
+    client=TestClient(app)
+    response=client.post('/api/v1/analyses',files=[('file',('view1.png',data(20),'image/png')),('additional_files',('view2.png',data(100),'image/png')),('additional_files',('view3.png',data(180),'image/png')),('additional_files',('view4.png',data(200),'image/png')),('additional_files',('view5.png',data(240),'image/png'))])
+    assert response.status_code==202,response.text
+    assert len(seen['request_data']['additional_image_paths'])==4
+    assert [Image.open(path).getpixel((0,0)) for path in [seen['image_path']]+seen['request_data']['additional_image_paths']]==[20,100,180,200,240]

@@ -71,6 +71,13 @@ class GradCAM:
         """
         # Activations from the target layer (final feature block output).
         # model.features ends at norm5; no in-place ReLU downstream here.
+        if hasattr(self.model, "alignment"):
+            feats = self.model.encoder(input_tensor)
+            if not feats.requires_grad:
+                feats = feats.requires_grad_(True)
+            logits = self.model.alignment(feats)["disease_logits"]
+            (grads,) = torch.autograd.grad(logits[0, class_index], feats)
+            return feats.detach(), grads.detach()
         feats = self.model.features(input_tensor)  # [1, C, Hf, Wf]
         if not feats.requires_grad:
             feats = feats.requires_grad_(True)
@@ -106,9 +113,8 @@ class GradCAM:
 
         # Fresh clone in normal grad mode (no inference_mode) so autograd works.
         input_tensor = input_tensor.detach().clone()
-        torch.set_grad_enabled(True)
-
-        feats, grads = self._activations_and_gradients(input_tensor, class_index)
+        with torch.enable_grad():
+            feats, grads = self._activations_and_gradients(input_tensor, class_index)
 
         # Global average pooling of gradients -> weights per channel.
         weights = grads.mean(dim=(2, 3), keepdim=True)  # [1, C, 1, 1]
@@ -175,46 +181,16 @@ def generate_contact_sheet(
 
     from PIL import ImageDraw, ImageFont
 
-    n_cells = cols * rows
-    sheet_h = rows * cell_size + 40  # extra for title row
-    sheet_w = cols * cell_size + 40
-
-    sheet = np.full((sheet_h, sheet_w, 3), 240, dtype=np.uint8)
-
-    # Title bar
-    sheet[0:24, :] = 40
-    draw = ImageDraw.Draw(Image.fromarray(sheet))
-    try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
-        small = ImageFont.truetype("DejaVuSans.ttf", 10)
-    except Exception:
-        font = ImageFont.load_default()
-        small = ImageFont.load_default()
-
-    draw.text((20, 6), "Grad-CAM Contact Sheet — All 18 Findings", fill=(255, 255, 255), font=font)
-    draw.text((20, 20), "Model explanations — not proof of disease", fill=(220, 220, 220), font=small)
-
-    # Place each overlay in a cell.
-    for idx, result in enumerate(results[:n_cells]):
-        r = idx // cols
-        c = idx % cols
-        x0 = 20 + c * cell_size
-        y0 = 40 + r * cell_size
-
-        # Resize overlay to cell size.
-        ov = result.overlay
-        ov_img = Image.fromarray(ov).resize((cell_size, cell_size), Image.BILINEAR)
-        sheet[y0 : y0 + cell_size, x0 : x0 + cell_size] = np.array(ov_img)
-
-        # Label under each cell.
-        label = result.target_label
-        draw.text(
-            (x0 + 4, y0 + cell_size + 2),
-            label,
-            fill=(0, 0, 0),
-            font=small,
-        )
-
+    from PIL import ImageDraw
+    label_height = 30
+    sheet = Image.new("RGB", (cols * cell_size, 40 + rows * (cell_size + label_height)), "white")
+    draw = ImageDraw.Draw(sheet)
+    draw.text((8, 8), "Grad-CAM: model attention, not proof of disease", fill="black")
+    for index, result in enumerate(results[:cols * rows]):
+        x = (index % cols) * cell_size
+        y = 40 + (index // cols) * (cell_size + label_height)
+        sheet.paste(Image.fromarray(result.overlay).resize((cell_size, cell_size)), (x, y))
+        draw.text((x + 4, y + cell_size + 4), result.target_label, fill="black")
     return np.array(sheet)
 
 

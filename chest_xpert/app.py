@@ -49,6 +49,7 @@ from chest_xpert.report import (
 )
 from chest_xpert.verification import VerificationEngine
 from chest_xpert.model_registry import registry
+from chest_xpert.config import LORA_CONFIG
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -135,6 +136,7 @@ def _get_llm_engine() -> VerificationEngine:
             force_cpu=st.session_state.get("llm_force_cpu") or LLM_MODEL_CONFIG.force_cpu,
             vllm_url=st.session_state.get("llm_vllm_url") or LLM_MODEL_CONFIG.vllm_url,
             load_in_4bit=st.session_state.get("llm_load_in_4bit") or LLM_MODEL_CONFIG.load_in_4bit,
+            lora_adapter_path=LORA_CONFIG.adapter_path if LORA_CONFIG.enabled else None,
         )
         if st.session_state.get("llm_token"):
             client._token = st.session_state.get("llm_token")

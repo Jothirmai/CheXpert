@@ -29,7 +29,7 @@ class CleanupService:
         candidates: list[dict] = []
         total_bytes = 0
 
-        for d in [self.temp_dir, self.reports_dir]:
+        for d in [self.temp_dir]:
             if not d.exists():
                 continue
             for f in d.rglob("*"):
@@ -59,7 +59,7 @@ class CleanupService:
             "preserved": [
                 "~/.torchxrayvision/models_data/ (pretrained weights)",
                 "active job artifacts (not yet expired)",
-                "user-requested reports (unless retention policy expires them)",
+                "saved reports, templates and review signatures",
             ],
         }
 
@@ -75,7 +75,7 @@ class CleanupService:
         if ttl_s is None:
             ttl_s = STORAGE_CONFIG.artifact_ttl_s
 
-        for d in [self.temp_dir, self.reports_dir]:
+        for d in [self.temp_dir]:
             if not d.exists():
                 continue
             for f in list(d.rglob("*")):

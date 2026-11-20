@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import asyncio
 
-from chest_xpert.modality import ModalityValidator
+from chest_xpert.modality import modality_validator
 
 
 async def warmup_modality() -> None:
     """Load the CLIP modality validator eagerly (CPU)."""
 
     def _load() -> None:
-        validator = ModalityValidator()
+        validator = modality_validator
         # Force CLIP to load (Qwen only loads if HF_TOKEN is set).
         validator._ensure_clip_loaded()
 

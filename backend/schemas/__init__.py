@@ -63,6 +63,7 @@ class AnalysisCreateRequest(BaseModel):
 
 
 class LabelScore(BaseModel):
+    score: Optional[float] = None
     label: str
     severity: str = "not assessed"
     supported: bool
@@ -97,6 +98,7 @@ class AnalysisResponse(BaseModel):
     contact_sheet_available: bool = False
     contact_sheet_url: Optional[str] = None
     disclaimer: str
+    v7_report: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
